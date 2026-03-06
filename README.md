@@ -137,24 +137,77 @@ claude --dangerously-skip-permissions
 
 ### Step 2: Run the command
 
-**With a JIRA ticket:**
+**Single JIRA ticket:**
 ```
 /remediate CI-21415
 ```
 
-**With raw CVE details:**
+**Multiple JIRA tickets (same repo → one PR):**
+```
+/remediate CI-21415 CI-21416 CI-21417
+```
+
+**Multiple JIRA tickets (different repos → one PR per repo):**
+```
+/remediate CI-21415 CI-21500
+```
+The agent groups tickets by image. If `CI-21415` is for `plugins/buildx` and `CI-21500` is for `plugins/docker`, it opens two separate PRs — one per repo.
+
+**Raw CVE details:**
 ```
 /remediate plugins/buildx:1.3.13 CVE-2026-24051 go.opentelemetry.io/otel/sdk@v1.31.0
 ```
 
-**With multiple CVEs:**
-```
-/remediate plugins/docker:27.5.1 CVE-2026-24051 CVE-2025-68121
-```
-
 ### Step 3: Review and approve
 
-The agent runs fully autonomously through all 9 steps. It pauses only before opening the GitHub PR — you review the vulnerability delta and per-CVE table, then approve.
+The agent runs fully autonomously. It pauses only before opening the GitHub PR — you review the full report, then approve.
+
+### What the PR looks like for multiple tickets
+
+Each PR contains:
+
+- Links to all JIRA tickets it covers
+- A combined vulnerability delta table (total before vs after across all tickets)
+- A **per-ticket section** for each ticket, showing:
+  - Ticket summary and JIRA link
+  - CVE status table (✅ Resolved / ⚠️ Partial / ❌ Blocked with reason)
+  - Dockerfile changes made specifically for that ticket's CVEs
+- Links to both the baseline and after scan executions in Harness
+- A major version upgrade warning (if any component crossed a major version boundary) with a QA checklist
+
+Example PR structure for `/remediate CI-1234 CI-1235`:
+
+```
+## Vulnerability Remediation: plugins/buildx
+
+Tickets: CI-1234, CI-1235
+Baseline scan: [link] | After scan: [link]
+
+### Vulnerability Delta
+| Severity | Before (1.3.13) | After (buildx-1.3.14--debug) | Change |
+| Critical | 3               | 0                            | -3     |
+| High     | 5               | 2                            | -3     |
+
+### Per-Ticket CVE Status
+
+#### CI-1234
+| CVE            | Package   | Before  | After   | Status      |
+| CVE-2026-24051 | otel/sdk  | v1.31.0 | v1.38.0 | ⚠️ Partial  |
+| CVE-2025-68121 | crypto/tls| v1.25.6 | v1.25.7 | ✅ Resolved |
+Code changes: docker base 28→29, buildx v0.23→v0.31.1
+
+#### CI-1235
+| CVE            | Package | Before     | After      | Status      |
+| CVE-2025-60876 | busybox | 1.37.0-r30 | 1.37.0-r30 | ❌ Blocked  |
+| CVE-2026-23992 | go-tuf  | v2.3.0     | v2.3.1     | ✅ Resolved |
+Code changes: resolved transitively via base image upgrade
+
+### Changes Made
+- FROM docker:28.1.1-dind → 29.2.1-dind  (MAJOR ⚠️)
+- BUILDX_URL v0.23.0 → v0.31.1
+
+> ⚠️ Major version upgrades — run sanity in QA before merging
+```
 
 ## One-liner Alias
 
