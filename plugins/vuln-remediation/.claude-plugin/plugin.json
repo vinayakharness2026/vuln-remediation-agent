@@ -1,0 +1,10 @@
+{
+  "name": "vuln-remediation",
+  "description": "Automates security vulnerability remediation for Harness CI container images. Analyzes JIRA tickets, upgrades Dockerfiles, builds test images, runs OnDemand scans, and creates PRs.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Harness CI Team"
+  },
+  "keywords": ["security", "vulnerability", "cve", "docker", "remediation", "ci"],
+  "homepage": "https://git0.harness.io/l7B_kbSEQD2wjrM7PShm5w/PROD/Harness_Commons/claude-code-marketplace"
+}
