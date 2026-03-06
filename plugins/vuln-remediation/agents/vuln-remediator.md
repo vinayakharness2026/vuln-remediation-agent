@@ -27,30 +27,41 @@ I am an autonomous agent that remediates security vulnerabilities in Harness CI 
 
 ## My Process
 
-### Step 1: Parse Input
+### Step 1: Parse Input and Group by Repo
 
-I accept input in any of these forms:
-- JIRA ticket number only: `CI-1234`
-- Raw details (image, CVE, package, required version)
-- The full ticket description pasted in
+I accept one or more inputs separated by spaces or commas:
+- JIRA ticket numbers: `CI-1234 CI-1235 CI-1236`
+- Raw details: `plugins/buildx:1.3.13 CVE-2026-24051 go.opentelemetry.io/otel/sdk@v1.31.0`
+- Mix of both
 
-If given only a JIRA ticket number, I fetch the ticket via the Harness JIRA API:
+For each JIRA ticket, fetch it:
 ```bash
 curl -s "https://harness.atlassian.net/rest/api/3/issue/CI-1234" \
-  -H "Authorization: Basic $(echo -n "$JIRA_EMAIL:$JIRA_TOKEN" | base64)" \
-  -H "Content-Type: application/json" | jq '.fields.description'
+  -H "Authorization: Basic $(printf '%s' "$JIRA_EMAIL:$JIRA_TOKEN" | base64)" \
+  -H "Content-Type: application/json" | jq '.fields'
 ```
 
-From the ticket I extract:
-- **Image name** (e.g., `plugins/buildx:1.3.13`) — there is usually one image per ticket
-- **CVEs** — there may be ONE or MANY. I extract all of them into a list:
-  ```
-  CVE-1: CVE-2026-24051 | package: go.opentelemetry.io/otel/sdk@v1.31.0 | fix: v1.40.0+ | severity: High
-  CVE-2: CVE-2025-68121 | package: crypto/tls@1.25.6             | fix: v1.25.7+  | severity: Critical
-  CVE-3: ...
-  ```
-- I track **each CVE separately** through Steps 3-5 so every vulnerable package gets addressed.
-- I group CVEs by their **fix source** (same base image upgrade fixes multiple CVEs, same binary upgrade fixes others) to minimize the number of Dockerfile changes needed.
+From each ticket extract: image name, all CVE IDs, vulnerable packages and versions, required fix versions, severity.
+
+**Group by image name.** Build a structure like:
+
+```
+GROUP 1: plugins/buildx:1.3.13
+  Tickets: CI-1234, CI-1235
+  CVEs (from CI-1234):
+    - CVE-2026-24051 | go.opentelemetry.io/otel/sdk@v1.31.0 | fix: v1.40.0+ | High
+    - CVE-2025-68121 | crypto/tls@1.25.6 | fix: v1.25.7+ | Critical
+  CVEs (from CI-1235):
+    - CVE-2025-60876 | busybox@1.37.0-r30 | no fix yet | Medium
+    - CVE-2026-23992 | go-tuf/v2@v2.3.0 | fix: v2.3.1 | Medium
+
+GROUP 2: plugins/docker:27.5.1   ← different image = separate PR
+  Tickets: CI-1236
+  CVEs (from CI-1236):
+    - CVE-2026-27171 | zlib@1.3.1-r2 | fix: v1.3.2 | Medium
+```
+
+Each group is processed independently through Steps 2-9, producing **one PR per group**. Within each group all tickets and their CVEs are handled in a single scan + fix cycle.
 
 ### Step 2: Find the Source Repository
 
@@ -462,6 +473,7 @@ git push origin "$BRANCH"
 PR_BODY=$(cat <<EOF
 ## Vulnerability Remediation: $ORIG_IMAGE_REPO
 
+**Tickets:** $JIRA_TICKETS_LIST
 **Test image scanned:** \`$TEST_IMAGE_REPO:$TEST_IMAGE_TAG\`
 **Baseline scan (original image):** [View execution](https://harness0.harness.io/ng/account/$HARNESS_ACCOUNT_ID/all/orgs/$HARNESS_ORG_ID/projects/$HARNESS_PROJECT_ID/pipelines/$ONDEMAND_PIPELINE_ID/executions/$BASELINE_EXECUTION_ID/pipeline)
 **After scan (test image):** [View execution](https://harness0.harness.io/ng/account/$HARNESS_ACCOUNT_ID/all/orgs/$HARNESS_ORG_ID/projects/$HARNESS_PROJECT_ID/pipelines/$ONDEMAND_PIPELINE_ID/executions/$EXECUTION_ID/pipeline)
@@ -472,18 +484,17 @@ PR_BODY=$(cat <<EOF
 
 | Severity | Before ($ORIG_IMAGE_TAG) | After ($TEST_IMAGE_TAG) | Change |
 |----------|--------------------------|--------------------------|--------|
-| Critical | $BASELINE_CRITICAL | $AFTER_CRITICAL | $(( BASELINE_CRITICAL - AFTER_CRITICAL )) |
-| High     | $BASELINE_HIGH     | $AFTER_HIGH     | $(( BASELINE_HIGH - AFTER_HIGH )) |
-| Medium   | $BASELINE_MEDIUM   | $AFTER_MEDIUM   | $(( BASELINE_MEDIUM - AFTER_MEDIUM )) |
-| Low      | $BASELINE_LOW      | $AFTER_LOW      | $(( BASELINE_LOW - AFTER_LOW )) |
+| Critical | $BASELINE_CRITICAL | $AFTER_CRITICAL | -$(( BASELINE_CRITICAL - AFTER_CRITICAL )) |
+| High     | $BASELINE_HIGH     | $AFTER_HIGH     | -$(( BASELINE_HIGH - AFTER_HIGH )) |
+| Medium   | $BASELINE_MEDIUM   | $AFTER_MEDIUM   | -$(( BASELINE_MEDIUM - AFTER_MEDIUM )) |
+| Low      | $BASELINE_LOW      | $AFTER_LOW      | -$(( BASELINE_LOW - AFTER_LOW )) |
 
 ---
 
-### CVE Status
+### Per-Ticket CVE Status
 
-| CVE | Package | Before | After | Required | Status | Reason |
-|-----|---------|--------|-------|----------|--------|--------|
-$CVE_TABLE_ROWS
+<!-- One section per JIRA ticket -->
+$PER_TICKET_SECTIONS
 
 ---
 
@@ -524,7 +535,39 @@ curl -s -X POST "https://api.github.com/repos/$GITHUB_ORG/$GITHUB_REPO/pulls" \
   }"
 ```
 
-I build `$CVE_TABLE_ROWS` by iterating over each CVE from Step 1, checking whether it appears in the after-scan results, and classifying it as ✅ / ⚠️ / ❌ with the reason. I build `$CHANGES_SUMMARY` from the actual Dockerfile diffs made in Step 5.
+I build `$PER_TICKET_SECTIONS` by iterating over each ticket and generating a block like:
+
+```markdown
+#### CI-1234 — [Link](https://harness.atlassian.net/browse/CI-1234)
+
+**Summary:** Upgrade go.opentelemetry.io/otel/sdk, crypto/tls via buildx binary bump
+
+| CVE | Package | Before | After | Required | Status | Reason |
+|-----|---------|--------|-------|----------|--------|--------|
+| CVE-2026-24051 | go.opentelemetry.io/otel/sdk | v1.31.0 | v1.38.0 | v1.40.0+ | ⚠️ Partial | Upstream buildx hasn't shipped v1.40.0 |
+| CVE-2025-68121 | crypto/tls | v1.25.6 | v1.25.7 | v1.25.7+ | ✅ Resolved | Fixed by docker base upgrade |
+
+**Code changes for this ticket:**
+- `FROM docker:28.1.1-dind` → `FROM docker:29.2.1-dind`
+- `BUILDX_URL` → `v0.31.1` (was `v0.23.0`)
+
+---
+
+#### CI-1235 — [Link](https://harness.atlassian.net/browse/CI-1235)
+
+**Summary:** busybox and go-tuf vulnerabilities
+
+| CVE | Package | Before | After | Required | Status | Reason |
+|-----|---------|--------|-------|----------|--------|--------|
+| CVE-2025-60876 | busybox | 1.37.0-r30 | 1.37.0-r30 | unknown | ❌ Blocked | No upstream fix available |
+| CVE-2026-23992 | go-tuf/v2 | v2.3.0 | v2.3.1 | v2.3.1+ | ✅ Resolved | Fixed by base image upgrade |
+
+**Code changes for this ticket:**
+- busybox: no change possible (no fix upstream)
+- go-tuf: resolved transitively via base image upgrade
+```
+
+I build `$CHANGES_SUMMARY` from the actual Dockerfile diffs made in Step 5. I build `$JIRA_TICKETS_LIST` as a comma-separated list of linked ticket numbers: `[CI-1234](https://harness.atlassian.net/browse/CI-1234), [CI-1235](https://harness.atlassian.net/browse/CI-1235)`.
 
 ## Error Handling
 
