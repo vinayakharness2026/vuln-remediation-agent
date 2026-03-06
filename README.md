@@ -20,22 +20,78 @@ Given a JIRA ticket number or raw CVE details, the agent:
    - Links to both scan executions in Harness
    - Major version upgrade warnings with QA checklist
 
-## Supported Repositories
+## Supported Images
 
-| JIRA Image | GitHub Repo |
-|---|---|
-| `plugins/buildx` | [drone-plugins/drone-buildx](https://github.com/drone-plugins/drone-buildx) |
-| `plugins/buildah` | [drone-plugins/drone-buildah](https://github.com/drone-plugins/drone-buildah) |
-| `plugins/docker` | [drone-plugins/drone-docker](https://github.com/drone-plugins/drone-docker) |
-| `plugins/git` | [drone-plugins/drone-git](https://github.com/drone-plugins/drone-git) |
-| `plugins/img` | [drone-plugins/drone-img](https://github.com/drone-plugins/drone-img) |
-| `plugins/s3` | [drone-plugins/drone-s3](https://github.com/drone-plugins/drone-s3) |
-| `plugins/s3-sync` | [drone-plugins/drone-s3-sync](https://github.com/drone-plugins/drone-s3-sync) |
-| `plugins/codedeploy` | [drone-plugins/drone-codedeploy](https://github.com/drone-plugins/drone-codedeploy) |
-| `plugins/opsworks` | [drone-plugins/drone-opsworks](https://github.com/drone-plugins/drone-opsworks) |
-| `plugins/meltwater-cache` | [drone-plugins/drone-meltwater-cache](https://github.com/drone-plugins/drone-meltwater-cache) |
+### Harness Internal (hosted on Harness Code)
 
-For any other `plugins/X` image, the agent automatically tries `github.com/drone-plugins/drone-X`.
+| Image | Source Repo | Priority | Notes |
+|---|---|---|---|
+| `harness/ci-addon` | [harness-core](https://harness0.harness.io/ng/account/l7B_kbSEQD2wjrM7PShm5w/module/code/orgs/PROD/projects/Harness_Commons/repos/harness-core) | P1 | Rootless variant also published |
+| `harness/ci-lite-engine` | [harness-core](https://harness0.harness.io/ng/account/l7B_kbSEQD2wjrM7PShm5w/module/code/orgs/PROD/projects/Harness_Commons/repos/harness-core) | P1 | Rootless variant also published |
+| `harness/harness-cache-server` | [harness-cache](https://harness0.harness.io/ng/account/l7B_kbSEQD2wjrM7PShm5w/module/code/orgs/PROD/projects/Harness_Commons/repos/harness-cache) | P1 | |
+| `harness/drone-git` | [drone-git](https://harness0.harness.io/ng/account/l7B_kbSEQD2wjrM7PShm5w/module/code/orgs/PROD/projects/Harness_Commons/repos/drone-git) | P1 | Optimised variant also published |
+
+### Kaniko Plugins
+
+| Image | Source Repo | Priority |
+|---|---|---|
+| `plugins/kaniko` | [drone/drone-kaniko](https://github.com/drone/drone-kaniko) | P1 |
+| `plugins/kaniko-ecr` | [drone/drone-kaniko](https://github.com/drone/drone-kaniko) | P1 |
+| `plugins/kaniko-gcr` | [drone/drone-kaniko](https://github.com/drone/drone-kaniko) | P1 |
+| `plugins/kaniko-acr` | [drone/drone-kaniko](https://github.com/drone/drone-kaniko) | P1 |
+
+### Docker Plugins (all from same repo)
+
+| Image | Source Repo | Priority | Notes |
+|---|---|---|---|
+| `plugins/docker` | [drone-plugins/drone-docker](https://github.com/drone-plugins/drone-docker) | P1 | |
+| `plugins/ecr` | [drone-plugins/drone-docker](https://github.com/drone-plugins/drone-docker) | P1 | |
+| `plugins/acr` | [drone-plugins/drone-docker](https://github.com/drone-plugins/drone-docker) | P1 | |
+| `plugins/gcr` | [drone-plugins/drone-docker](https://github.com/drone-plugins/drone-docker) | P1 | Deprecated |
+| `plugins/gar` | [drone-plugins/drone-docker](https://github.com/drone-plugins/drone-docker) | P1 | |
+
+### Buildx Plugins
+
+| Image | Source Repo | Priority |
+|---|---|---|
+| `plugins/buildx` | [drone-plugins/drone-buildx](https://github.com/drone-plugins/drone-buildx) | P1 |
+| `plugins/buildx-ecr` | [drone-plugins/drone-buildx-ecr](https://github.com/drone-plugins/drone-buildx-ecr) | P1 |
+| `plugins/buildx-acr` | [drone-plugins/drone-buildx-acr](https://github.com/drone-plugins/drone-buildx-acr) | P1 |
+| `plugins/buildx-gcr` | [drone-plugins/drone-buildx-gcr](https://github.com/drone-plugins/drone-buildx-gcr) | P1 |
+| `plugins/buildx-gar` | [drone-plugins/drone-buildx-gar](https://github.com/drone-plugins/drone-buildx-gar) | P1 |
+
+### Storage & Artifact Plugins
+
+| Image | Source Repo | Priority |
+|---|---|---|
+| `plugins/s3` | [drone-plugins/drone-s3](https://github.com/drone-plugins/drone-s3) | P1 |
+| `plugins/gcs` | [drone-plugins/drone-gcs](https://github.com/drone-plugins/drone-gcs) | P1 |
+| `plugins/artifactory` | [harness/drone-artifactory](https://github.com/harness/drone-artifactory) | P1 |
+| `plugins/cache` | [drone-plugins/drone-meltwater-cache](https://github.com/drone-plugins/drone-meltwater-cache) | P1 |
+| `plugins/s3-sync` | [drone-plugins/drone-s3-sync](https://github.com/drone-plugins/drone-s3-sync) | P1 |
+
+### Other P1 Plugins
+
+| Image | Source Repo | Priority |
+|---|---|---|
+| `plugins/buildah` | [drone-plugins/drone-buildah](https://github.com/drone-plugins/drone-buildah) | P2 |
+| `plugins/img` | [drone-plugins/drone-img](https://github.com/drone-plugins/drone-img) | P1 |
+
+### P2 Plugins
+
+| Image | Source Repo | Notes |
+|---|---|---|
+| `email` | [harness-community/drone-email](https://github.com/harness-community/drone-email) | |
+| `githubaction` | [drone-plugins/github-actions](https://github.com/drone-plugins/github-actions) | |
+| `plugins/test-analysis` | [harness-community/test-analysis](https://github.com/harness-community/test-analysis) | |
+| `plugins/artifact-metadata-publisher` | [drone-plugins/artifact-metadata-publisher](https://github.com/drone-plugins/artifact-metadata-publisher) | |
+| `plugins/aws-oidc` | [harness-community/drone-aws-oidc](https://github.com/harness-community/drone-aws-oidc) | |
+| `plugins/gcp-oidc` | [harness-community/drone-gcp-oidc](https://github.com/harness-community/drone-gcp-oidc) | |
+| `plugins/azure-oidc` | [harness-community/drone-azure-oidc](https://github.com/harness-community/drone-azure-oidc) | |
+| `plugins/buildah-docker` | [drone-plugins/drone-buildah](https://github.com/drone-plugins/drone-buildah) | Same repo as buildah |
+| `plugins/image-migration` | [harness-community/drone-docker-image-migration](https://github.com/harness-community/drone-docker-image-migration) | |
+| `plugins/codedeploy` | [drone-plugins/drone-codedeploy](https://github.com/drone-plugins/drone-codedeploy) | |
+| `plugins/opsworks` | [drone-plugins/drone-opsworks](https://github.com/drone-plugins/drone-opsworks) | |
 
 ## Prerequisites
 

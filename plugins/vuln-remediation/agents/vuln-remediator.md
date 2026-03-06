@@ -54,22 +54,62 @@ From the ticket I extract:
 
 ### Step 2: Find the Source Repository
 
-I map image names to GitHub repos. Known mappings:
-| Image name | GitHub repo |
-|---|---|
-| `plugins/buildx` | `github.com/drone-plugins/drone-buildx` |
-| `plugins/buildah` | `github.com/drone-plugins/drone-buildah` |
-| `plugins/codedeploy` | `github.com/drone-plugins/drone-codedeploy` |
-| `plugins/docker` | `github.com/drone-plugins/drone-docker` |
-| `plugins/img` | `github.com/drone-plugins/drone-img` |
-| `plugins/meltwater-cache` | `github.com/drone-plugins/drone-meltwater-cache` |
-| `plugins/opsworks` | `github.com/drone-plugins/drone-opsworks` |
-| `plugins/s3` | `github.com/drone-plugins/drone-s3` |
-| `plugins/s3-sync` | `github.com/drone-plugins/drone-s3-sync` |
-| `plugins/git` | `github.com/drone-plugins/drone-git` |
-| `harness/ci-addon` | Harness internal repo |
+I map image names to their source repos. **Some repos are on Harness Code (git0.harness.io) and require `HARNESS_TOKEN` to clone. Others are on GitHub and use `GITHUB_TOKEN`.**
 
-If the image is not in this table, derive the repo by: stripping `plugins/` prefix, prepending `drone-`, and looking under `github.com/drone-plugins/`. For example `plugins/ecr` → `github.com/drone-plugins/drone-ecr`. Verify the repo exists before cloning.
+**Harness Internal Repos** (clone with `HARNESS_TOKEN`):
+| Image | Harness Code Repo | Notes |
+|---|---|---|
+| `harness/ci-addon` | `git0.harness.io/l7B_kbSEQD2wjrM7PShm5w/PROD/Harness_Commons/harness-core` | Rootless variant also exists |
+| `harness/ci-lite-engine` | `git0.harness.io/l7B_kbSEQD2wjrM7PShm5w/PROD/Harness_Commons/harness-core` | Rootless variant also exists |
+| `harness/harness-cache-server` | `git0.harness.io/l7B_kbSEQD2wjrM7PShm5w/PROD/Harness_Commons/harness-cache` | |
+| `harness/drone-git` | `git0.harness.io/l7B_kbSEQD2wjrM7PShm5w/PROD/Harness_Commons/drone-git` | Optimised variant also exists |
+
+**GitHub Repos** (clone with `GITHUB_TOKEN`):
+| Image | GitHub Repo | Notes |
+|---|---|---|
+| `plugins/kaniko` | `github.com/drone/drone-kaniko` | |
+| `plugins/kaniko-ecr` | `github.com/drone/drone-kaniko` | Same repo as kaniko |
+| `plugins/kaniko-gcr` | `github.com/drone/drone-kaniko` | Same repo as kaniko |
+| `plugins/kaniko-acr` | `github.com/drone/drone-kaniko` | Same repo as kaniko |
+| `plugins/docker` | `github.com/drone-plugins/drone-docker` | |
+| `plugins/ecr` | `github.com/drone-plugins/drone-docker` | Same repo as docker |
+| `plugins/acr` | `github.com/drone-plugins/drone-docker` | Same repo as docker |
+| `plugins/gcr` | `github.com/drone-plugins/drone-docker` | Deprecated |
+| `plugins/gar` | `github.com/drone-plugins/drone-docker` | Same repo as docker |
+| `plugins/buildx` | `github.com/drone-plugins/drone-buildx` | |
+| `plugins/buildx-ecr` | `github.com/drone-plugins/drone-buildx-ecr` | |
+| `plugins/buildx-acr` | `github.com/drone-plugins/drone-buildx-acr` | |
+| `plugins/buildx-gcr` | `github.com/drone-plugins/drone-buildx-gcr` | |
+| `plugins/buildx-gar` | `github.com/drone-plugins/drone-buildx-gar` | |
+| `plugins/gcs` | `github.com/drone-plugins/drone-gcs` | |
+| `plugins/s3` | `github.com/drone-plugins/drone-s3` | |
+| `plugins/s3-sync` | `github.com/drone-plugins/drone-s3-sync` | |
+| `plugins/cache` | `github.com/drone-plugins/drone-meltwater-cache` | |
+| `plugins/artifactory` | `github.com/harness/drone-artifactory` | |
+| `plugins/buildah` | `github.com/drone-plugins/drone-buildah` | |
+| `plugins/buildah-docker` | `github.com/drone-plugins/drone-buildah` | Same repo as buildah |
+| `plugins/img` | `github.com/drone-plugins/drone-img` | |
+| `plugins/codedeploy` | `github.com/drone-plugins/drone-codedeploy` | |
+| `plugins/opsworks` | `github.com/drone-plugins/drone-opsworks` | |
+| `plugins/artifact-metadata-publisher` | `github.com/drone-plugins/artifact-metadata-publisher` | |
+| `plugins/test-analysis` | `github.com/harness-community/test-analysis` | |
+| `plugins/aws-oidc` | `github.com/harness-community/drone-aws-oidc` | |
+| `plugins/gcp-oidc` | `github.com/harness-community/drone-gcp-oidc` | |
+| `plugins/azure-oidc` | `github.com/harness-community/drone-azure-oidc` | |
+| `plugins/image-migration` | `github.com/harness-community/drone-docker-image-migration` | |
+| `email` | `github.com/harness-community/drone-email` | |
+| `githubaction` | `github.com/drone-plugins/github-actions` | |
+
+**Clone command — pick the right auth based on the table above:**
+```bash
+# GitHub repo
+git clone https://x-token-auth:$GITHUB_TOKEN@github.com/drone-plugins/drone-buildx.git /tmp/vuln-work/$PLUGIN_SHORT_NAME
+
+# Harness Code repo
+git clone https://x-token-auth:$HARNESS_TOKEN@git0.harness.io/l7B_kbSEQD2wjrM7PShm5w/PROD/Harness_Commons/harness-core.git /tmp/vuln-work/harness-core
+```
+
+If the image is not in either table, ask the user for the source repo URL before proceeding.
 
 I verify by checking GitHub:
 ```bash
