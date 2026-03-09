@@ -169,33 +169,119 @@ grep -E "\.(tar|tgz|tar\.gz)" Dockerfile
 
 For each source I identify: current version, whether it contains the vulnerable package, and what the fix path is.
 
-### Step 4: Research Available Fixes
+### Step 4: Research Minimum Safe Version
 
-For each vulnerability source:
+**Goal: find the oldest version that fixes the CVE, not the latest.**
 
-**Base image** — query Docker Hub for latest stable:
-```bash
-curl -s "https://hub.docker.com/v2/repositories/library/docker/tags?name=dind&ordering=last_updated" \
-  | jq '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+-dind$"))] | .[0].name'
+This minimises the upgrade blast radius. A minor patch bump is always preferred over a major version jump if it satisfies the fix requirement.
+
+#### Helper: find_min_safe_version
+
+Use this logic for every component:
+
+```python
+# Compare semver tuples — returns True if version a >= b
+def semver_gte(a, b):
+    def parse(v):
+        import re
+        nums = re.findall(r'\d+', v.lstrip('v'))
+        return tuple(int(x) for x in (nums + ['0','0','0'])[:3])
+    return parse(a) >= parse(b)
 ```
 
-**Bundled binary** (e.g., buildx) — query GitHub releases:
+#### For bundled binaries (e.g., buildx, JFrog CLI) where the CVE is in a transitive dep:
+
+Iterate releases in **ascending version order** and check each release's `go.sum` for the dep version. Return the first release where the dep meets the requirement.
+
 ```bash
-curl -s "https://api.github.com/repos/docker/buildx/releases/latest" \
-  -H "Authorization: Bearer $GITHUB_TOKEN" | jq '.tag_name'
+REQUIRED_DEP="go.opentelemetry.io/otel/sdk"
+REQUIRED_DEP_VERSION="v1.40.0"
+BINARY_REPO="docker/buildx"   # or jfrog/jfrog-cli, etc.
+
+# Get all releases sorted ascending
+ALL_TAGS=$(curl -s "https://api.github.com/repos/$BINARY_REPO/releases?per_page=100" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" | jq -r '.[].tag_name' | \
+  python3 -c "
+import sys, re
+def parse(v): return tuple(int(x) for x in re.findall(r'\d+', v)[:3])
+tags = [l.strip() for l in sys.stdin if l.strip()]
+print('\n'.join(sorted(tags, key=parse)))
+")
+
+CURRENT_TAG=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$CURRENT_BINARY_VERSION" | head -1)
+
+MIN_SAFE_TAG=""
+for TAG in $ALL_TAGS; do
+  # Skip versions older than current
+  python3 -c "
+import re
+def p(v): return tuple(int(x) for x in re.findall(r'\d+', v)[:3])
+exit(0 if p('$TAG') > p('$CURRENT_TAG') else 1)" || continue
+
+  # Check if this release's go.sum has the dep at required version
+  DEP_VER=$(curl -sf "https://raw.githubusercontent.com/$BINARY_REPO/$TAG/go.sum" 2>/dev/null | \
+    grep "^${REQUIRED_DEP} " | head -1 | awk '{print $2}' | cut -d/ -f1)
+
+  if [ -n "$DEP_VER" ]; then
+    MEETS=$(python3 -c "
+import re
+def p(v): return tuple(int(x) for x in re.findall(r'\d+', v)[:3])
+print('yes' if p('$DEP_VER') >= p('$REQUIRED_DEP_VERSION') else 'no')")
+    if [ "$MEETS" = "yes" ]; then
+      MIN_SAFE_TAG="$TAG"
+      echo "Minimum safe version: $MIN_SAFE_TAG (ships $REQUIRED_DEP $DEP_VER >= $REQUIRED_DEP_VERSION)"
+      break
+    else
+      echo "  $TAG: $REQUIRED_DEP=$DEP_VER — not sufficient"
+    fi
+  fi
+done
+
+if [ -z "$MIN_SAFE_TAG" ]; then
+  echo "No release found with $REQUIRED_DEP >= $REQUIRED_DEP_VERSION — fix not available upstream yet"
+fi
 ```
 
-**Direct/transitive Go deps** — check the module proxy:
+#### For base images (e.g., `docker:28.1.1-dind`, `alpine:3.20`):
+
+The CVE fix is usually in a specific Alpine package version. Find the minimum base image tag where that package is fixed:
+
 ```bash
-curl -s "https://proxy.golang.org/go.opentelemetry.io/otel/sdk/@latest" | jq '.Version'
+# For Alpine-based images: check when the package was fixed in Alpine
+# Alpine security tracker: https://security.alpinelinux.org/vuln/CVE-XXXX
+# Usually a new Alpine patch release (3.20.x) contains the fix
+
+# Get all tags for the base image matching the same major.minor
+BASE_IMAGE="docker"
+BASE_TAG_PATTERN="^28\.[0-9]+\.[0-9]+-dind$"   # same major, any minor/patch
+
+curl -s "https://hub.docker.com/v2/repositories/library/$BASE_IMAGE/tags?page_size=100" | \
+  jq -r '.results[].name' | grep -E "$BASE_TAG_PATTERN" | \
+  python3 -c "
+import sys, re
+def parse(v): return tuple(int(x) for x in re.findall(r'\d+', v)[:3])
+tags = [l.strip() for l in sys.stdin if l.strip()]
+print('\n'.join(sorted(tags, key=parse)))
+"
+# Then manually verify which tag first shipped the fixed package
+# Use the MINIMUM tag that's newer than current and same major.minor where possible
 ```
 
-I build a table documenting:
-| Source | Current | Available | Required | Status |
-|--------|---------|-----------|----------|--------|
-| docker base | 28.1.1-dind | 29.2.1-dind | any newer | ✅ Available |
-| buildx binary | v0.23.0 | v0.31.1 | v0.31.0+ | ✅ Available |
-| otel/sdk (via buildx) | v1.31.0 | v1.38.0 | v1.40.0+ | ⚠️ Partial |
+#### Decision logic — prefer minimum bump:
+
+```
+1. If fix is available in same major.minor (patch bump only):  → use that
+2. If fix requires a new minor version (minor bump):           → use that, flag it
+3. If fix requires a new major version (major bump):           → use that, flag it prominently with ⚠️ warning
+4. If no release satisfies the requirement:                    → report ❌ Blocked
+```
+
+I build a table documenting the chosen version and why:
+| Source | Current | Min Safe | Latest | Required | Chosen | Reason |
+|--------|---------|----------|--------|----------|--------|--------|
+| docker base | 28.1.1-dind | 28.1.3-dind | 29.2.1-dind | any fix | 28.1.3-dind | patch bump sufficient |
+| buildx binary | v0.23.0 | v0.19.3 | v0.31.1 | otel/sdk≥v1.40.0 | v0.19.3 | first release with fix |
+| otel/sdk (via buildx) | v1.31.0 | — | v1.38.0 | v1.40.0+ | ❌ none | upstream hasn't shipped v1.40.0 in any buildx release |
 
 ### Step 5: Make Code Changes
 
