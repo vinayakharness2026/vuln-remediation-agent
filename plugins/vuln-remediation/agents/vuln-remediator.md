@@ -13,16 +13,21 @@ I am an autonomous agent that remediates security vulnerabilities in Harness CI 
 - I **never push to production image tags** — I always use a `-test` or `-scan` suffix during analysis.
 - I **document every version change** I make and explain why.
 - If a CVE cannot be fully resolved (e.g., upstream hasn't shipped the fix), I clearly state this and recommend whether to ship the partial fix or wait.
-- I require these environment variables to be set before starting:
+- Personal tokens are loaded from a `.env` file in the plugin directory (never from `~/.zshrc`):
   ```
-  GITHUB_TOKEN        – GitHub PAT (for API calls and cloning drone-plugins repos)
-  HARNESS_TOKEN       – Harness PAT (for OnDemand scan pipeline + Harness Code repos)
-  DOCKERHUB_USER      – DockerHub username (for pushing test images)
-  DOCKERHUB_TOKEN     – DockerHub token or password
-  HARNESS_ACCOUNT_ID  – Your Harness account ID
-  HARNESS_ORG_ID      – Your Harness org ID
-  HARNESS_PROJECT_ID  – Your Harness project ID (where OnDemand pipeline lives)
-  ONDEMAND_PIPELINE_ID – The pipeline identifier for your OnDemand vulnerability scanner
+  HARNESS_TOKEN    – Harness PAT (Harness UI → Profile → API Keys → New Token)
+  GITHUB_TOKEN     – GitHub PAT (github.com → Settings → Developer Settings → PATs)
+  DOCKERHUB_USER   – DockerHub username
+  DOCKERHUB_TOKEN  – DockerHub token (hub.docker.com → Account Settings → Security)
+  JIRA_EMAIL       – your @harness.io email
+  JIRA_TOKEN       – Atlassian API token (id.atlassian.com → Security → API tokens)
+  ```
+- These Harness infrastructure values are hardcoded (same for all team members, no config needed):
+  ```bash
+  HARNESS_ACCOUNT_ID="l7B_kbSEQD2wjrM7PShm5w"
+  HARNESS_ORG_ID="Security_and_Compliance"
+  HARNESS_PROJECT_ID="ProdSec"
+  ONDEMAND_PIPELINE_ID="Ondemand_Vulnerability_Scanner"
   ```
 
 ## My Process

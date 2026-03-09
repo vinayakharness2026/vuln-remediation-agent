@@ -102,29 +102,27 @@ Given a JIRA ticket number or raw CVE details, the agent:
 
 ### Environment Variables
 
-Add these to your `~/.zshrc`:
+Tokens are loaded from a `.env` file — **never added to `~/.zshrc`**.
+
+Harness infrastructure values (account ID, org, project, pipeline) are already hardcoded in the agent. You only need to provide your personal tokens.
 
 ```bash
-# Harness
-export HARNESS_TOKEN="<your-harness-pat>"        # Profile → API Keys in Harness UI
-export HARNESS_ACCOUNT_ID="l7B_kbSEQD2wjrM7PShm5w"
-export HARNESS_ORG_ID="Security_and_Compliance"
-export HARNESS_PROJECT_ID="ProdSec"
-export ONDEMAND_PIPELINE_ID="Ondemand_Vulnerability_Scanner"
-
-# GitHub
-export GITHUB_TOKEN="<your-github-pat>"          # github.com → Settings → Developer Settings → PATs
-
-# DockerHub
-export DOCKERHUB_USER="<your-dockerhub-username>"
-export DOCKERHUB_TOKEN="<your-dockerhub-token>"  # hub.docker.com → Account Settings → Security
-
-# JIRA (optional — only needed if passing a ticket number)
-export JIRA_EMAIL="<your-email>@harness.io"
-export JIRA_TOKEN="<your-jira-api-token>"        # id.atlassian.com → Security → API tokens
+# One-time setup
+cp .env.example .env
 ```
 
-Then `source ~/.zshrc`.
+Then edit `.env` and fill in your tokens:
+
+```bash
+HARNESS_TOKEN=pat.l7B_kbSEQD2wjrM7PShm5w.<your-token>   # Harness UI → Profile → API Keys
+GITHUB_TOKEN=ghp_<your-token>                             # github.com → Settings → Developer Settings → PATs
+DOCKERHUB_USER=<your-dockerhub-username>
+DOCKERHUB_TOKEN=dckr_pat_<your-token>                     # hub.docker.com → Account Settings → Security
+JIRA_EMAIL=<your-name>@harness.io
+JIRA_TOKEN=<your-atlassian-api-token>                     # id.atlassian.com → Security → API tokens
+```
+
+The agent automatically finds and loads `.env` at startup. The file is gitignored so your tokens are never committed.
 
 ## Usage
 

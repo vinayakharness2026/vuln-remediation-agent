@@ -44,20 +44,47 @@ Extract from each ticket:
 
 ## Pre-flight Checks
 
-Before starting, verify required environment variables are set:
+### 1. Set hardcoded Harness infrastructure vars (same for all team members)
 ```bash
-for var in GITHUB_TOKEN HARNESS_TOKEN DOCKERHUB_USER DOCKERHUB_TOKEN HARNESS_ACCOUNT_ID ONDEMAND_PIPELINE_ID; do
+export HARNESS_ACCOUNT_ID="l7B_kbSEQD2wjrM7PShm5w"
+export HARNESS_ORG_ID="Security_and_Compliance"
+export HARNESS_PROJECT_ID="ProdSec"
+export ONDEMAND_PIPELINE_ID="Ondemand_Vulnerability_Scanner"
+```
+
+### 2. Load personal tokens from .env file
+```bash
+for dir in . .. ../.. ../../..; do
+  if [ -f "$dir/.env" ]; then
+    set -a && source "$dir/.env" && set +a
+    echo "Loaded .env from $dir"
+    break
+  fi
+done
+```
+
+### 3. Verify personal tokens are present
+```bash
+for var in HARNESS_TOKEN GITHUB_TOKEN DOCKERHUB_USER DOCKERHUB_TOKEN JIRA_EMAIL JIRA_TOKEN; do
   val=$(printenv "$var")
   if [ -z "$val" ]; then echo "MISSING: $var"; else echo "OK: $var"; fi
 done
 ```
 
-If any are missing, tell the user which ones are needed and where to get them:
-- `GITHUB_TOKEN`: github.com → Settings → Developer Settings → Personal Access Tokens
-- `HARNESS_TOKEN`: Harness UI → Profile → API Keys → New Token
-- `DOCKERHUB_USER` / `DOCKERHUB_TOKEN`: hub.docker.com → Account Settings → Security
-- `HARNESS_ACCOUNT_ID`: from Harness UI URL (`/account/<id>/...`)
-- `ONDEMAND_PIPELINE_ID`: Harness UI → Pipelines → your OnDemand scanner → copy ID from URL
+If any personal tokens are missing, stop and tell the user:
+```
+Some tokens are missing. Create a .env file in the plugin directory:
+
+  cp .env.example .env
+  # then fill in your tokens
+
+Tokens needed:
+  HARNESS_TOKEN  — Harness UI → Profile (top right) → API Keys → New Token
+  GITHUB_TOKEN   — github.com → Settings → Developer Settings → PATs
+  DOCKERHUB_USER / DOCKERHUB_TOKEN — hub.docker.com → Account Settings → Security
+  JIRA_EMAIL     — your @harness.io email
+  JIRA_TOKEN     — id.atlassian.com → Security → API tokens
+```
 
 ## Execution
 
