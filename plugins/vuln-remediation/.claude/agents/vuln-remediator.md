@@ -299,14 +299,86 @@ TEST_IMAGE_REPO="$DOCKERHUB_USER/${PLUGIN_SHORT_NAME}-test"
 TEST_IMAGE_TAG="${PLUGIN_SHORT_NAME}-${NEXT_VERSION}--debug"   # buildx-1.3.14--debug
 
 echo "Test image: $TEST_IMAGE_REPO:$TEST_IMAGE_TAG"
+```
 
-# Build for linux/amd64 (matches scanner architecture)
+**Before running the build**, inspect the repo structure to determine the correct Dockerfile and build strategy. Repos fall into three patterns:
+
+| Pattern | How to identify | What to do |
+|---|---|---|
+| **A — Self-contained** | `ARG *_URL` + `RUN wget/curl` in Dockerfile (e.g. drone-buildx, drone-docker) | Just run `docker build` |
+| **B — Pre-built binary** | `ADD release/linux/amd64/` or `COPY release/` in Dockerfile (e.g. drone-s3, drone-gcs, drone-artifactory, github-actions) | Download binary from GitHub releases first, then `docker build` |
+| **C — Builds from source** | `FROM golang:` builder stage in Dockerfile (e.g. drone-email, drone-meltwater-cache) | Just run `docker build` — Go binary is compiled inside |
+
+```bash
+REPO_DIR="/tmp/vuln-work/$PLUGIN_SHORT_NAME"
+
+# 1. Find the right Dockerfile
+if   [ -f "$REPO_DIR/docker/Dockerfile.linux.amd64" ]; then DOCKERFILE="docker/Dockerfile.linux.amd64"
+elif [ -f "$REPO_DIR/Dockerfile.linux.amd64" ];        then DOCKERFILE="Dockerfile.linux.amd64"
+elif [ -f "$REPO_DIR/Dockerfile" ];                    then DOCKERFILE="Dockerfile"
+else echo "ERROR: Cannot find Dockerfile"; exit 1; fi
+echo "Using Dockerfile: $DOCKERFILE"
+
+# 2. Detect pattern
+ADD_LINE=$(grep -E "^ADD release/linux/amd64/" "$REPO_DIR/$DOCKERFILE" 2>/dev/null | head -1)
+COPY_LINE=$(grep -E "^COPY release/linux/amd64/" "$REPO_DIR/$DOCKERFILE" 2>/dev/null | head -1)
+BINARY_LINE="${ADD_LINE:-$COPY_LINE}"
+
+if [ -n "$BINARY_LINE" ]; then
+  echo "Pattern B detected — pre-built binary required"
+  echo "Dockerfile line: $BINARY_LINE"
+
+  # Extract the expected local path (e.g. release/linux/amd64/drone-s3)
+  LOCAL_PATH=$(echo "$BINARY_LINE" | awk '{print $2}')   # e.g. release/linux/amd64/drone-s3
+  BINARY_NAME=$(basename "$LOCAL_PATH")                   # e.g. drone-s3 or plugin
+  TARGET_DIR="$REPO_DIR/$(dirname $LOCAL_PATH)"
+  mkdir -p "$TARGET_DIR"
+
+  # Download from GitHub releases
+  RELEASE_JSON=$(curl -s "https://api.github.com/repos/$GITHUB_ORG/$GITHUB_REPO/releases/latest" \
+    -H "Authorization: Bearer $GITHUB_TOKEN")
+  echo "Latest release: $(echo $RELEASE_JSON | jq -r '.tag_name')"
+  echo "Assets:"
+  echo "$RELEASE_JSON" | jq -r '.assets[] | "  \(.name) → \(.browser_download_url)"'
+
+  # Pick linux/amd64 asset — prefer .zst, fallback to plain binary
+  ASSET_URL=$(echo "$RELEASE_JSON" | jq -r '
+    .assets[] | select(.name | test("linux.?amd64|linux-amd64"; "i")) |
+    .browser_download_url' | head -1)
+
+  if [ -z "$ASSET_URL" ]; then
+    echo "ERROR: No linux/amd64 asset found. Check assets above and download manually."
+    exit 1
+  fi
+
+  ASSET_FILE="$TARGET_DIR/$(basename $ASSET_URL)"
+  echo "Downloading: $ASSET_URL"
+  curl -fL "$ASSET_URL" -o "$ASSET_FILE"
+
+  # Decompress if needed
+  if [[ "$ASSET_FILE" == *.zst ]]; then
+    zstd -d "$ASSET_FILE" -o "$TARGET_DIR/$BINARY_NAME" && rm "$ASSET_FILE"
+  elif [[ "$ASSET_FILE" == *.tar.gz ]]; then
+    tar -xzf "$ASSET_FILE" -C "$TARGET_DIR" && rm "$ASSET_FILE"
+    # Rename extracted file to expected name if different
+    find "$TARGET_DIR" -maxdepth 1 -type f ! -name "$BINARY_NAME" -exec mv {} "$TARGET_DIR/$BINARY_NAME" \;
+  else
+    mv "$ASSET_FILE" "$TARGET_DIR/$BINARY_NAME"
+  fi
+
+  chmod +x "$TARGET_DIR/$BINARY_NAME"
+  echo "Binary ready: $TARGET_DIR/$BINARY_NAME"
+else
+  echo "Pattern A or C — build is self-contained, no binary download needed"
+fi
+
+# 3. Build — always use repo root as context, specify Dockerfile explicitly
 docker buildx build \
   --platform linux/amd64 \
   -t "$TEST_IMAGE_REPO:$TEST_IMAGE_TAG" \
-  -f Dockerfile \
+  -f "$DOCKERFILE" \
   --push \
-  /tmp/vuln-work/$PLUGIN_SHORT_NAME
+  "$REPO_DIR"
 
 echo "Pushed: $TEST_IMAGE_REPO:$TEST_IMAGE_TAG"
 ```
@@ -368,47 +440,74 @@ If `PIPELINE_FAILED=true`, stop and report the failure reason. Do not proceed to
 
 ### Step 8: Fetch Results from Harness STO API
 
-The scanner (Twistlock/Prisma Cloud) uploads results to the Harness STO service. After the pipeline completes, query the STO API directly — no need to parse pipeline logs.
+The scanner uploads results to the Harness STO service. Use the execution ID to look up the scan directly — do NOT paginate through all issues.
 
 ```bash
-# Step 8a: Find the target ID for this image
-TARGET_RESPONSE=$(curl -s \
-  "https://harness0.harness.io/sto/api/v2/targets?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&name=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$TEST_IMAGE_REPO'))")" \
-  -H "x-api-key: $HARNESS_TOKEN")
-TARGET_ID=$(echo "$TARGET_RESPONSE" | jq -r '.data.items[0].id')
-echo "Target ID: $TARGET_ID"
+get_scan_id() {
+  local EXECUTION_ID=$1
+  local IMAGE_REPO=$2
+  local IMAGE_TAG=$3
 
-# Step 8b: Find the variant ID for this tag
-VARIANT_RESPONSE=$(curl -s \
-  "https://harness0.harness.io/sto/api/v2/targets/$TARGET_ID/variants?accountId=$HARNESS_ACCOUNT_ID&name=$TEST_IMAGE_TAG" \
-  -H "x-api-key: $HARNESS_TOKEN")
-VARIANT_ID=$(echo "$VARIANT_RESPONSE" | jq -r '.data.items[0].id')
-echo "Variant ID: $VARIANT_ID"
+  # Find target by image name (URL-encode the slash)
+  ENCODED_NAME=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$IMAGE_REPO'))")
+  TARGET_ID=$(curl -s \
+    "https://harness0.harness.io/sto/api/v2/targets?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&name=$ENCODED_NAME" \
+    -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
 
-# Step 8c: Find the scan ID for this execution
-# The scan executionId matches the pipeline execution ID
-SCAN_RESPONSE=$(curl -s \
-  "https://harness0.harness.io/sto/api/v2/scans?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&targetVariantId=$VARIANT_ID" \
-  -H "x-api-key: $HARNESS_TOKEN")
-# Find the scan that matches our execution
-SCAN_ID=$(echo "$SCAN_RESPONSE" | jq -r --arg execId "$EXECUTION_ID" \
-  '.data.items[] | select(.executionId == $execId) | .id' | head -1)
-# Fallback: just take the latest scan
-if [ -z "$SCAN_ID" ]; then
-  SCAN_ID=$(echo "$SCAN_RESPONSE" | jq -r '.data.items[0].id')
-fi
-echo "Scan ID: $SCAN_ID"
+  # Find variant by tag name
+  VARIANT_ID=$(curl -s \
+    "https://harness0.harness.io/sto/api/v2/targets/$TARGET_ID/variants?accountId=$HARNESS_ACCOUNT_ID&name=$IMAGE_TAG" \
+    -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
 
-# Step 8d: Get the issue counts
-COUNTS=$(curl -s \
-  "https://harness0.harness.io/sto/api/v2/scans/$SCAN_ID/issues/counts?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID" \
-  -H "x-api-key: $HARNESS_TOKEN")
-echo "$COUNTS" | jq .
+  # Find scan matching this execution ID
+  SCAN_ID=$(curl -s \
+    "https://harness0.harness.io/sto/api/v2/scans?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&targetVariantId=$VARIANT_ID&executionId=$EXECUTION_ID" \
+    -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
 
-# Step 8e: Get individual issues for detailed reporting
-ISSUES=$(curl -s \
-  "https://harness0.harness.io/sto/api/v2/issues?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&scanId=$SCAN_ID" \
+  # Fallback: most recent scan for this variant
+  if [ -z "$SCAN_ID" ] || [ "$SCAN_ID" = "null" ]; then
+    SCAN_ID=$(curl -s \
+      "https://harness0.harness.io/sto/api/v2/scans?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&targetVariantId=$VARIANT_ID&pageSize=1" \
+      -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
+    echo "WARNING: Using most recent scan (execution ID match failed)"
+  fi
+
+  echo "$SCAN_ID"
+}
+
+# Get scan IDs for both runs
+BASELINE_SCAN_ID=$(get_scan_id "$BASELINE_EXECUTION_ID" "$ORIG_IMAGE_REPO" "$ORIG_IMAGE_TAG")
+TEST_SCAN_ID=$(get_scan_id "$EXECUTION_ID" "$TEST_IMAGE_REPO" "$TEST_IMAGE_TAG")
+echo "Baseline scan: $BASELINE_SCAN_ID"
+echo "Test scan:     $TEST_SCAN_ID"
+
+# Get summary counts (fast — single request each)
+BASELINE_COUNTS=$(curl -s \
+  "https://harness0.harness.io/sto/api/v2/scans/$BASELINE_SCAN_ID/issues/counts?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID" \
   -H "x-api-key: $HARNESS_TOKEN")
+TEST_COUNTS=$(curl -s \
+  "https://harness0.harness.io/sto/api/v2/scans/$TEST_SCAN_ID/issues/counts?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID" \
+  -H "x-api-key: $HARNESS_TOKEN")
+
+echo "Baseline:" && echo "$BASELINE_COUNTS" | jq '{Critical,High,Medium,Low}'
+echo "Test:"     && echo "$TEST_COUNTS"     | jq '{Critical,High,Medium,Low}'
+
+# Look up ONLY the specific CVEs from the ticket — do NOT fetch all issues
+# This avoids the pagination problem (some scans have 10,000+ issues)
+for CVE_ID in $TICKET_CVE_IDS; do
+  BASELINE_HIT=$(curl -s \
+    "https://harness0.harness.io/sto/api/v2/issues?accountId=$HARNESS_ACCOUNT_ID&scanId=$BASELINE_SCAN_ID&referenceId=$CVE_ID&pageSize=5" \
+    -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0] // .data.items[0]')
+  TEST_HIT=$(curl -s \
+    "https://harness0.harness.io/sto/api/v2/issues?accountId=$HARNESS_ACCOUNT_ID&scanId=$TEST_SCAN_ID&referenceId=$CVE_ID&pageSize=5" \
+    -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0] // .data.items[0]')
+
+  BEFORE_VER=$(echo "$BASELINE_HIT" | jq -r '.currentVersion // "not found"')
+  AFTER_VER=$(echo  "$TEST_HIT"     | jq -r '.currentVersion // "resolved"')
+  REMEDIATION=$(echo "$TEST_HIT"    | jq -r '.remediationSteps // ""')
+
+  echo "CVE=$CVE_ID | before=$BEFORE_VER | after=$AFTER_VER | fix=$REMEDIATION"
+done
 ```
 
 The counts response looks like:
