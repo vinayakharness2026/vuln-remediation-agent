@@ -8,20 +8,38 @@ Invoke the `vuln-remediator` agent to remediate the vulnerabilities described be
 
 The user has provided: $ARGUMENTS
 
-Parse `$ARGUMENTS` as a space or comma separated list. Each item is either:
+Parse `$ARGUMENTS` as a space or comma separated list. Each item is one of:
 - A JIRA ticket number: `CI-1234`
 - Raw vulnerability details: `plugins/buildx:1.3.13 CVE-2026-24051 go.opentelemetry.io/otel/sdk@v1.31.0`
+- A path to a Trivy JSON scan result: `--trivy /tmp/trivy-results.json`
 
 ### Examples
 ```
-/remediate CI-1234                              # single ticket
-/remediate CI-1234 CI-1235 CI-1236             # multiple tickets, likely same repo → one PR
-/remediate CI-1234 CI-1235                     # two tickets, could be different repos → separate PRs per repo
+/remediate CI-1234                                    # single JIRA ticket
+/remediate CI-1234 CI-1235 CI-1236                   # multiple tickets → one PR per repo
+/remediate --trivy /tmp/trivy.json                   # trivy scan as input
+/remediate CI-1234 --trivy /tmp/trivy.json           # JIRA + trivy combined
 ```
+
+If `--trivy <path>` is provided, parse the Trivy JSON file:
+```bash
+cat "$TRIVY_FILE" | jq '[.Results[].Vulnerabilities // [] | .[] | {
+  cve: .VulnerabilityID,
+  package: .PkgName,
+  installed: .InstalledVersion,
+  fixed: .FixedVersion,
+  severity: .Severity,
+  title: .Title
+}]'
+```
+Extract the image name from `.ArtifactName` in the Trivy output. Merge CVEs from Trivy with any CVEs from JIRA tickets, deduplicating by CVE ID.
 
 If no arguments were provided, ask the user:
 ```
-Please provide one or more JIRA ticket numbers (e.g., CI-1234 CI-1235) or raw CVE details.
+Please provide one or more of:
+  - JIRA ticket numbers (e.g., CI-1234 CI-1235)
+  - Raw CVE details
+  - A Trivy scan file: --trivy /path/to/trivy-results.json
 ```
 
 ## Step 1: Fetch and Group All Tickets

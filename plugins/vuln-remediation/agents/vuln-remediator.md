@@ -363,7 +363,34 @@ harness_execute({
 
 Capture the returned execution ID as `BASELINE_EXECUTION_ID`.
 
-Poll until complete, then fetch STO results (same flow as Step 8). Store baseline counts as `BASELINE_CRITICAL`, `BASELINE_HIGH`, `BASELINE_MEDIUM`, `BASELINE_LOW`, and the full list of CVE IDs found as `BASELINE_CVE_LIST`.
+While the OnDemand pipeline runs, also run Trivy locally on the original image in parallel:
+
+```bash
+echo "Running Trivy baseline scan..."
+docker run --rm \
+  -v /tmp/trivy-cache:/root/.cache \
+  aquasec/trivy:latest image \
+  --format json \
+  --quiet \
+  "$ORIG_IMAGE_REPO:$ORIG_IMAGE_TAG" > /tmp/trivy-baseline.json 2>/dev/null
+
+# Parse counts
+TRIVY_BASELINE_CRITICAL=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="CRITICAL")] | length' /tmp/trivy-baseline.json)
+TRIVY_BASELINE_HIGH=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="HIGH")] | length' /tmp/trivy-baseline.json)
+TRIVY_BASELINE_MEDIUM=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="MEDIUM")] | length' /tmp/trivy-baseline.json)
+TRIVY_BASELINE_LOW=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="LOW")] | length' /tmp/trivy-baseline.json)
+
+# Extract CVEs caught by Trivy for the ticket CVEs
+for CVE_ID in $TICKET_CVE_IDS; do
+  TRIVY_HIT=$(jq -r --arg cve "$CVE_ID" \
+    '[.Results[].Vulnerabilities // [] | .[] | select(.VulnerabilityID==$cve)] | first | "\(.PkgName)@\(.InstalledVersion) → fix: \(.FixedVersion)"' \
+    /tmp/trivy-baseline.json 2>/dev/null)
+  [ -n "$TRIVY_HIT" ] && echo "Trivy found $CVE_ID: $TRIVY_HIT"
+done
+echo "Trivy baseline: Critical=$TRIVY_BASELINE_CRITICAL High=$TRIVY_BASELINE_HIGH Medium=$TRIVY_BASELINE_MEDIUM Low=$TRIVY_BASELINE_LOW"
+```
+
+Poll the OnDemand pipeline until complete, then fetch STO results (Step 8). Store baseline counts as `BASELINE_CRITICAL`, `BASELINE_HIGH`, `BASELINE_MEDIUM`, `BASELINE_LOW`, and the full list of CVE IDs found as `BASELINE_CVE_LIST`.
 
 ### Step 7: Build and Push Test Image
 
@@ -492,7 +519,37 @@ harness_execute({
 
 Capture the returned execution ID as `EXECUTION_ID`.
 
-**Wait and check status** using `harness_diagnose` — call it every 30 seconds until status is not Running:
+While the OnDemand pipeline runs, also run Trivy locally on the test image:
+
+```bash
+echo "Running Trivy scan on test image..."
+docker run --rm \
+  -v /tmp/trivy-cache:/root/.cache \
+  aquasec/trivy:latest image \
+  --format json \
+  --quiet \
+  "$TEST_IMAGE_REPO:$TEST_IMAGE_TAG" > /tmp/trivy-test.json 2>/dev/null
+
+TRIVY_TEST_CRITICAL=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="CRITICAL")] | length' /tmp/trivy-test.json)
+TRIVY_TEST_HIGH=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="HIGH")] | length' /tmp/trivy-test.json)
+TRIVY_TEST_MEDIUM=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="MEDIUM")] | length' /tmp/trivy-test.json)
+TRIVY_TEST_LOW=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity=="LOW")] | length' /tmp/trivy-test.json)
+
+# Check each ticket CVE in the after-scan
+for CVE_ID in $TICKET_CVE_IDS; do
+  TRIVY_AFTER=$(jq -r --arg cve "$CVE_ID" \
+    '[.Results[].Vulnerabilities // [] | .[] | select(.VulnerabilityID==$cve)] | first | "\(.PkgName)@\(.InstalledVersion)"' \
+    /tmp/trivy-test.json 2>/dev/null)
+  if [ -z "$TRIVY_AFTER" ] || [ "$TRIVY_AFTER" = "null" ]; then
+    echo "Trivy: $CVE_ID ✅ no longer present in test image"
+  else
+    echo "Trivy: $CVE_ID ⚠️ still present: $TRIVY_AFTER"
+  fi
+done
+echo "Trivy test: Critical=$TRIVY_TEST_CRITICAL High=$TRIVY_TEST_HIGH Medium=$TRIVY_TEST_MEDIUM Low=$TRIVY_TEST_LOW"
+```
+
+**Wait and check status of OnDemand pipeline** using `harness_diagnose` — call it every 30 seconds until status is not Running:
 ```
 harness_diagnose({
   execution_id: EXECUTION_ID,
@@ -653,14 +710,25 @@ PR_BODY=$(cat <<EOF
 
 ---
 
-### Vulnerability Delta
+### Vulnerability Delta — Harness OnDemand Scanner (Prisma Cloud)
 
 | Severity | Before ($ORIG_IMAGE_TAG) | After ($TEST_IMAGE_TAG) | Change |
 |----------|--------------------------|--------------------------|--------|
-| Critical | $BASELINE_CRITICAL | $AFTER_CRITICAL | -$(( BASELINE_CRITICAL - AFTER_CRITICAL )) |
-| High     | $BASELINE_HIGH     | $AFTER_HIGH     | -$(( BASELINE_HIGH - AFTER_HIGH )) |
-| Medium   | $BASELINE_MEDIUM   | $AFTER_MEDIUM   | -$(( BASELINE_MEDIUM - AFTER_MEDIUM )) |
-| Low      | $BASELINE_LOW      | $AFTER_LOW      | -$(( BASELINE_LOW - AFTER_LOW )) |
+| Critical | $BASELINE_CRITICAL | $AFTER_CRITICAL | $(( AFTER_CRITICAL - BASELINE_CRITICAL )) |
+| High     | $BASELINE_HIGH     | $AFTER_HIGH     | $(( AFTER_HIGH - BASELINE_HIGH )) |
+| Medium   | $BASELINE_MEDIUM   | $AFTER_MEDIUM   | $(( AFTER_MEDIUM - BASELINE_MEDIUM )) |
+| Low      | $BASELINE_LOW      | $AFTER_LOW      | $(( AFTER_LOW - BASELINE_LOW )) |
+
+### Vulnerability Delta — Trivy (local scan)
+
+> Trivy and OnDemand use different CVE databases and may flag different issues. Both are shown for completeness.
+
+| Severity | Before ($ORIG_IMAGE_TAG) | After ($TEST_IMAGE_TAG) | Change |
+|----------|--------------------------|--------------------------|--------|
+| Critical | $TRIVY_BASELINE_CRITICAL | $TRIVY_TEST_CRITICAL | $(( TRIVY_TEST_CRITICAL - TRIVY_BASELINE_CRITICAL )) |
+| High     | $TRIVY_BASELINE_HIGH     | $TRIVY_TEST_HIGH     | $(( TRIVY_TEST_HIGH - TRIVY_BASELINE_HIGH )) |
+| Medium   | $TRIVY_BASELINE_MEDIUM   | $TRIVY_TEST_MEDIUM   | $(( TRIVY_TEST_MEDIUM - TRIVY_BASELINE_MEDIUM )) |
+| Low      | $TRIVY_BASELINE_LOW      | $TRIVY_TEST_LOW      | $(( TRIVY_TEST_LOW - TRIVY_BASELINE_LOW )) |
 
 ---
 

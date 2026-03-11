@@ -6,7 +6,7 @@ A Claude Code agent that automates end-to-end security vulnerability remediation
 
 ## How It Works
 
-Given a JIRA ticket number, the agent:
+Given a JIRA ticket number, a Trivy scan result, or raw CVE details, the agent:
 
 1. Fetches the ticket and extracts all CVEs, affected packages, and required fix versions
 2. Scans the original image via the Harness OnDemand Vulnerability Scanner (baseline)
@@ -14,8 +14,10 @@ Given a JIRA ticket number, the agent:
 4. Finds the **minimum safe version** that fixes each CVE — not necessarily the latest
 5. Makes targeted Dockerfile upgrades, flags any major version bumps that need QA
 6. Builds and pushes a test image to DockerHub (`{plugin}-{next-version}--debug`)
-7. Triggers the OnDemand scanner on the test image and polls until complete
-8. Computes the before/after vulnerability delta
+7. **Runs two scans in parallel** on both baseline and test image:
+   - Harness OnDemand scanner (Prisma Cloud) via MCP
+   - Trivy locally — catches CVEs the OnDemand scanner may miss
+8. Merges results from both scanners and computes before/after delta
 9. **Pauses for your approval**, then opens a GitHub PR with the full report
 
 ---
@@ -106,6 +108,16 @@ claude --dangerously-skip-permissions
 **Multiple tickets for different images → one PR per repo:**
 ```
 /remediate CI-21415 CI-21500
+```
+
+**From a Trivy scan result (no JIRA ticket needed):**
+```
+/remediate --trivy /tmp/trivy-results.json
+```
+
+**Trivy + JIRA combined:**
+```
+/remediate CI-21415 --trivy /tmp/trivy-results.json
 ```
 
 **Raw CVE details (no JIRA ticket):**
