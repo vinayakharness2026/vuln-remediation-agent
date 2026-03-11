@@ -27,6 +27,7 @@ Given a JIRA ticket number, the agent:
 - [Claude Code](https://claude.ai/code) — install with `npm install -g @anthropic-ai/claude-code`
 - Docker Desktop — must be running when the agent builds images
 - `jq` — `brew install jq`
+- `node` / `npx` — required for the Harness MCP server (`brew install node`)
 
 ### 2. Clone the repo
 
@@ -66,6 +67,16 @@ Where to get each token:
 > The `.env` file is gitignored. Your tokens are never committed.
 >
 > Harness infrastructure values (account ID, org, project, pipeline ID) are already hardcoded in the agent — you don't need to set them.
+
+### 4. Harness MCP server (pre-configured, no setup needed)
+
+The agent uses [Harness MCP v2](https://github.com/thisrohangupta/harness-mcp-v2) to trigger pipelines and check execution status — no raw API calls. The MCP server is already configured in `.claude/settings.json`. It starts automatically when Claude Code launches from the plugin directory.
+
+To verify it's connected, launch the agent and run:
+```
+What is the status of the Ondemand_Vulnerability_Scanner pipeline?
+```
+Claude will use the MCP to answer with real Harness data.
 
 ---
 

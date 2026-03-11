@@ -342,28 +342,22 @@ ORIG_IMAGE_TAG=$(echo "$IMAGE_NAME" | cut -d: -f2)    # 1.3.13
 PLUGIN_SHORT_NAME=$(echo "$ORIG_IMAGE_REPO" | sed 's|plugins/||')  # buildx
 ```
 
-Trigger the OnDemand scan on the original image:
-```bash
-BASELINE_RESPONSE=$(curl -s -X POST \
-  "https://harness0.harness.io/gateway/pipeline/api/pipeline/execute/$ONDEMAND_PIPELINE_ID?routingId=$HARNESS_ACCOUNT_ID&accountIdentifier=$HARNESS_ACCOUNT_ID&orgIdentifier=$HARNESS_ORG_ID&projectIdentifier=$HARNESS_PROJECT_ID&moduleType=ci" \
-  -H "x-api-key: $HARNESS_TOKEN" \
-  -H "Content-Type: application/yaml" \
-  --data-raw "pipeline:
-  identifier: $ONDEMAND_PIPELINE_ID
-  variables:
-    - name: image
-      type: String
-      value: $ORIG_IMAGE_REPO
-    - name: tag
-      type: String
-      value: $ORIG_IMAGE_TAG
-    - name: Connector
-      type: String
-      value: docker.io")
+Trigger the OnDemand scan on the original image using the **Harness MCP** `harness_execute` tool:
 
-BASELINE_EXECUTION_ID=$(echo "$BASELINE_RESPONSE" | jq -r '.data.planExecution.uuid')
-echo "Baseline scan execution ID: $BASELINE_EXECUTION_ID"
 ```
+harness_execute({
+  resource_type: "pipeline",
+  action: "run",
+  resource_id: "Ondemand_Vulnerability_Scanner",
+  inputs: {
+    image: ORIG_IMAGE_REPO,
+    tag: ORIG_IMAGE_TAG,
+    Connector: "docker.io"
+  }
+})
+```
+
+Capture the returned execution ID as `BASELINE_EXECUTION_ID`.
 
 Poll until complete, then fetch STO results (same flow as Step 8). Store baseline counts as `BASELINE_CRITICAL`, `BASELINE_HIGH`, `BASELINE_MEDIUM`, `BASELINE_LOW`, and the full list of CVE IDs found as `BASELINE_CVE_LIST`.
 
@@ -476,103 +470,84 @@ echo "Pushed: $TEST_IMAGE_REPO:$TEST_IMAGE_TAG"
 
 ### Step 7: Trigger Harness OnDemand Vulnerability Scan and Wait
 
-The Harness instance is at `harness0.harness.io`. The pipeline takes three variables: `image`, `tag`, `Connector`.
+Use the **Harness MCP** `harness_execute` tool to trigger the pipeline. No raw curl needed.
 
-```bash
-# Trigger pipeline — Content-Type must be application/yaml, body is raw YAML (not JSON)
-PIPELINE_RESPONSE=$(curl -s -X POST \
-  "https://harness0.harness.io/gateway/pipeline/api/pipeline/execute/$ONDEMAND_PIPELINE_ID?routingId=$HARNESS_ACCOUNT_ID&accountIdentifier=$HARNESS_ACCOUNT_ID&orgIdentifier=$HARNESS_ORG_ID&projectIdentifier=$HARNESS_PROJECT_ID&moduleType=ci" \
-  -H "x-api-key: $HARNESS_TOKEN" \
-  -H "Content-Type: application/yaml" \
-  --data-raw "pipeline:
-  identifier: $ONDEMAND_PIPELINE_ID
-  variables:
-    - name: image
-      type: String
-      value: $TEST_IMAGE_REPO
-    - name: tag
-      type: String
-      value: $TEST_IMAGE_TAG
-    - name: Connector
-      type: String
-      value: docker.io")
-
-EXECUTION_ID=$(echo "$PIPELINE_RESPONSE" | jq -r '.data.planExecution.uuid')
-echo "Execution ID: $EXECUTION_ID"
-echo "Watch at: https://harness0.harness.io/ng/account/$HARNESS_ACCOUNT_ID/all/orgs/$HARNESS_ORG_ID/projects/$HARNESS_PROJECT_ID/pipelines/$ONDEMAND_PIPELINE_ID/executions/$EXECUTION_ID/pipeline"
+**Trigger:**
+```
+harness_execute({
+  resource_type: "pipeline",
+  action: "run",
+  resource_id: "Ondemand_Vulnerability_Scanner",
+  inputs: {
+    image: TEST_IMAGE_REPO,
+    tag: TEST_IMAGE_TAG,
+    Connector: "docker.io"
+  }
+})
 ```
 
-Poll for completion every 30s (pipeline typically takes 3-5 minutes):
-```bash
-for i in $(seq 1 30); do
-  STATUS=$(curl -s \
-    "https://harness0.harness.io/gateway/pipeline/api/pipelines/execution/v2/$EXECUTION_ID?routingId=$HARNESS_ACCOUNT_ID&accountIdentifier=$HARNESS_ACCOUNT_ID&orgIdentifier=$HARNESS_ORG_ID&projectIdentifier=$HARNESS_PROJECT_ID" \
-    -H "x-api-key: $HARNESS_TOKEN" | jq -r '.data.pipelineExecutionSummary.status')
-  echo "[$i/30] Status: $STATUS"
-  if [[ "$STATUS" == "Success" ]]; then
-    echo "Pipeline succeeded."
-    break
-  fi
-  if [[ "$STATUS" == "Failed" || "$STATUS" == "Aborted" ]]; then
-    echo "Pipeline $STATUS. Fetching failure details..."
-    EXEC_DETAIL=$(curl -s \
-      "https://harness0.harness.io/gateway/pipeline/api/pipelines/execution/v2/$EXECUTION_ID?routingId=$HARNESS_ACCOUNT_ID&accountIdentifier=$HARNESS_ACCOUNT_ID&orgIdentifier=$HARNESS_ORG_ID&projectIdentifier=$HARNESS_PROJECT_ID" \
-      -H "x-api-key: $HARNESS_TOKEN")
-    echo "$EXEC_DETAIL" | jq '[.data.pipelineExecutionSummary.layoutNodeMap // {} | to_entries[] | select(.value.status == "Failed") | {step: .value.name, message: .value.failureInfo.message}]'
-    echo "Full execution: https://harness0.harness.io/ng/account/$HARNESS_ACCOUNT_ID/all/orgs/$HARNESS_ORG_ID/projects/$HARNESS_PROJECT_ID/pipelines/$ONDEMAND_PIPELINE_ID/executions/$EXECUTION_ID/pipeline"
-    echo "PIPELINE_FAILED=true"
-    break
-  fi
-  sleep 30
-done
+Capture the returned execution ID as `EXECUTION_ID`.
+
+**Wait and check status** using `harness_diagnose` — call it every 30 seconds until status is not Running:
+```
+harness_diagnose({
+  execution_id: EXECUTION_ID,
+  summary: true
+})
 ```
 
-If `PIPELINE_FAILED=true`, stop and report the failure reason. Do not proceed to Step 8. Ask the user if they want to debug the pipeline or if the input variables were wrong.
+The response includes:
+- `status` — Running / Success / Failed / Aborted
+- Stage and step breakdown with timing
+- If failed: structured failure reason, error message, delegate info
+
+If the execution fails, `harness_diagnose` gives a complete structured report of what went wrong — no additional API calls needed. Stop here and show the user the failure details. Do not proceed to Step 8.
 
 ### Step 8: Fetch Results from Harness STO API
 
-The scanner uploads results to the Harness STO service. Use the execution ID to look up the scan directly — do NOT paginate through all issues.
+**Try MCP first, fall back to direct STO API if needed.**
+
+#### 8a: Get vulnerability counts per scan
+
+Try via MCP:
+```
+harness_list({
+  resource_type: "security_issue",
+  filters: { execution_id: BASELINE_EXECUTION_ID }
+})
+
+harness_list({
+  resource_type: "security_issue",
+  filters: { execution_id: EXECUTION_ID }
+})
+```
+
+If the MCP response includes severity counts, use them directly. If not (MCP may not support this filter yet), fall back to the direct STO API:
 
 ```bash
 get_scan_id() {
-  local EXECUTION_ID=$1
-  local IMAGE_REPO=$2
-  local IMAGE_TAG=$3
-
-  # Find target by image name (URL-encode the slash)
-  ENCODED_NAME=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$IMAGE_REPO'))")
+  local EXEC_ID=$1 IMAGE_REPO=$2 IMAGE_TAG=$3
+  ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$IMAGE_REPO'))")
   TARGET_ID=$(curl -s \
-    "https://harness0.harness.io/sto/api/v2/targets?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&name=$ENCODED_NAME" \
+    "https://harness0.harness.io/sto/api/v2/targets?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&name=$ENCODED" \
     -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
-
-  # Find variant by tag name
   VARIANT_ID=$(curl -s \
     "https://harness0.harness.io/sto/api/v2/targets/$TARGET_ID/variants?accountId=$HARNESS_ACCOUNT_ID&name=$IMAGE_TAG" \
     -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
-
-  # Find scan matching this execution ID
   SCAN_ID=$(curl -s \
-    "https://harness0.harness.io/sto/api/v2/scans?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&targetVariantId=$VARIANT_ID&executionId=$EXECUTION_ID" \
+    "https://harness0.harness.io/sto/api/v2/scans?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&targetVariantId=$VARIANT_ID&executionId=$EXEC_ID" \
     -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
-
-  # Fallback: most recent scan for this variant
   if [ -z "$SCAN_ID" ] || [ "$SCAN_ID" = "null" ]; then
     SCAN_ID=$(curl -s \
       "https://harness0.harness.io/sto/api/v2/scans?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID&targetVariantId=$VARIANT_ID&pageSize=1" \
       -H "x-api-key: $HARNESS_TOKEN" | jq -r '.results[0].id // .data.items[0].id')
-    echo "WARNING: Using most recent scan (execution ID match failed)"
   fi
-
   echo "$SCAN_ID"
 }
 
-# Get scan IDs for both runs
 BASELINE_SCAN_ID=$(get_scan_id "$BASELINE_EXECUTION_ID" "$ORIG_IMAGE_REPO" "$ORIG_IMAGE_TAG")
 TEST_SCAN_ID=$(get_scan_id "$EXECUTION_ID" "$TEST_IMAGE_REPO" "$TEST_IMAGE_TAG")
-echo "Baseline scan: $BASELINE_SCAN_ID"
-echo "Test scan:     $TEST_SCAN_ID"
 
-# Get summary counts (fast — single request each)
 BASELINE_COUNTS=$(curl -s \
   "https://harness0.harness.io/sto/api/v2/scans/$BASELINE_SCAN_ID/issues/counts?accountId=$HARNESS_ACCOUNT_ID&orgId=$HARNESS_ORG_ID&projectId=$HARNESS_PROJECT_ID" \
   -H "x-api-key: $HARNESS_TOKEN")
@@ -582,9 +557,13 @@ TEST_COUNTS=$(curl -s \
 
 echo "Baseline:" && echo "$BASELINE_COUNTS" | jq '{Critical,High,Medium,Low}'
 echo "Test:"     && echo "$TEST_COUNTS"     | jq '{Critical,High,Medium,Low}'
+```
 
-# Look up ONLY the specific CVEs from the ticket — do NOT fetch all issues
-# This avoids the pagination problem (some scans have 10,000+ issues)
+#### 8b: Look up specific CVEs from the ticket
+
+**Do NOT paginate all issues** — query only the CVE IDs from the ticket:
+
+```bash
 for CVE_ID in $TICKET_CVE_IDS; do
   BASELINE_HIT=$(curl -s \
     "https://harness0.harness.io/sto/api/v2/issues?accountId=$HARNESS_ACCOUNT_ID&scanId=$BASELINE_SCAN_ID&referenceId=$CVE_ID&pageSize=5" \
@@ -596,9 +575,9 @@ for CVE_ID in $TICKET_CVE_IDS; do
   BEFORE_VER=$(echo "$BASELINE_HIT" | jq -r '.currentVersion // "not found"')
   AFTER_VER=$(echo  "$TEST_HIT"     | jq -r '.currentVersion // "resolved"')
   REMEDIATION=$(echo "$TEST_HIT"    | jq -r '.remediationSteps // ""')
-
   echo "CVE=$CVE_ID | before=$BEFORE_VER | after=$AFTER_VER | fix=$REMEDIATION"
 done
+```
 ```
 
 The counts response looks like:
