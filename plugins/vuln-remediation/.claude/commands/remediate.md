@@ -44,47 +44,32 @@ Extract from each ticket:
 
 ## Pre-flight Checks
 
-### 1. Set hardcoded Harness infrastructure vars (same for all team members)
+Run this single block once at the start — do NOT repeat it before every command:
+
 ```bash
+# Hardcoded infrastructure vars
 export HARNESS_ACCOUNT_ID="l7B_kbSEQD2wjrM7PShm5w"
 export HARNESS_ORG_ID="Security_and_Compliance"
 export HARNESS_PROJECT_ID="ProdSec"
 export ONDEMAND_PIPELINE_ID="Ondemand_Vulnerability_Scanner"
-```
 
-### 2. Load personal tokens from .env file
-```bash
-for dir in . .. ../.. ../../..; do
-  if [ -f "$dir/.env" ]; then
-    set -a && source "$dir/.env" && set +a
-    echo "Loaded .env from $dir"
-    break
-  fi
-done
-```
-
-### 3. Verify personal tokens are present
-```bash
+# Verify personal tokens are already in the environment
+# (user runs `source .env && claude` before launching — tokens should be present)
+MISSING=""
 for var in HARNESS_TOKEN GITHUB_TOKEN DOCKERHUB_USER DOCKERHUB_TOKEN JIRA_EMAIL JIRA_TOKEN; do
-  val=$(printenv "$var")
-  if [ -z "$val" ]; then echo "MISSING: $var"; else echo "OK: $var"; fi
+  [ -z "$(printenv $var)" ] && MISSING="$MISSING $var"
 done
+
+if [ -n "$MISSING" ]; then
+  echo "MISSING tokens:$MISSING"
+  echo "Run: source /path/to/.env  then restart claude"
+  exit 1
+else
+  echo "All tokens present. Proceeding."
+fi
 ```
 
-If any personal tokens are missing, stop and tell the user:
-```
-Some tokens are missing. Create a .env file in the plugin directory:
-
-  cp .env.example .env
-  # then fill in your tokens
-
-Tokens needed:
-  HARNESS_TOKEN  — Harness UI → Profile (top right) → API Keys → New Token
-  GITHUB_TOKEN   — github.com → Settings → Developer Settings → PATs
-  DOCKERHUB_USER / DOCKERHUB_TOKEN — hub.docker.com → Account Settings → Security
-  JIRA_EMAIL     — your @harness.io email
-  JIRA_TOKEN     — id.atlassian.com → Security → API tokens
-```
+**IMPORTANT: Do NOT source .env inside individual step commands. Run the above block once and proceed.**
 
 ## Execution
 

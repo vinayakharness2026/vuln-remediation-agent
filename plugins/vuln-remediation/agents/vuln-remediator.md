@@ -203,8 +203,9 @@ REQUIRED_DEP="go.opentelemetry.io/otel/sdk"
 REQUIRED_DEP_VERSION="v1.40.0"
 BINARY_REPO="docker/buildx"   # or jfrog/jfrog-cli, etc.
 
-# Get all releases sorted ascending
-ALL_TAGS=$(curl -s "https://api.github.com/repos/$BINARY_REPO/releases?per_page=100" \
+# Get releases sorted ascending — cap at 50 to avoid infinite loops
+# Only fetch releases newer than current, stop as soon as a fix is found
+ALL_TAGS=$(curl -s "https://api.github.com/repos/$BINARY_REPO/releases?per_page=50" \
   -H "Authorization: Bearer $GITHUB_TOKEN" | jq -r '.[].tag_name' | \
   python3 -c "
 import sys, re
@@ -216,7 +217,10 @@ print('\n'.join(sorted(tags, key=parse)))
 CURRENT_TAG=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$CURRENT_BINARY_VERSION" | head -1)
 
 MIN_SAFE_TAG=""
+CHECKED=0
 for TAG in $ALL_TAGS; do
+  CHECKED=$((CHECKED + 1))
+  [ $CHECKED -gt 30 ] && echo "Checked 30 releases, no fix found yet — stopping search" && break
   # Skip versions older than current
   python3 -c "
 import re
