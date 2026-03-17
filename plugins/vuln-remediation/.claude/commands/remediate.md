@@ -65,23 +65,37 @@ Extract from each ticket:
 ⚠️ **Run this ONCE at the very start. Never repeat it. Never prefix later commands with `source .env`.**
 
 ```bash
-# Hardcoded infrastructure vars — set once, reuse throughout
+# Hardcoded infrastructure vars
 export HARNESS_ACCOUNT_ID="l7B_kbSEQD2wjrM7PShm5w"
 export HARNESS_ORG_ID="Security_and_Compliance"
 export HARNESS_PROJECT_ID="ProdSec"
 export ONDEMAND_PIPELINE_ID="Ondemand_Vulnerability_Scanner"
 
-# Check tokens are present — user launched with `source .env && claude`
+# Auto-load .env from the repo — walk up from cwd to find it
+ENV_FILE=""
+for dir in . .. ../.. ../../..; do
+  if [ -f "$dir/.env" ]; then
+    ENV_FILE="$(cd "$dir" && pwd)/.env"
+    break
+  fi
+done
+
+if [ -n "$ENV_FILE" ]; then
+  set -a && source "$ENV_FILE" && set +a
+  echo "Loaded: $ENV_FILE"
+else
+  echo "No .env file found — checking environment anyway"
+fi
+
+# Verify all tokens are now present
 MISSING=""
 for var in HARNESS_TOKEN GITHUB_TOKEN DOCKERHUB_USER DOCKERHUB_TOKEN JIRA_EMAIL JIRA_TOKEN; do
   [ -z "$(printenv $var)" ] && MISSING="$MISSING $var"
 done
 
 if [ -n "$MISSING" ]; then
-  echo "ERROR - missing:$MISSING"
-  echo "Exit claude. In your terminal run:"
-  echo "  cd /Users/vinayak-harness/Dev/vuln-remediation-plugin/plugins/vuln-remediation"
-  echo "  source ../../.env && claude --dangerously-skip-permissions"
+  echo "ERROR - still missing:$MISSING"
+  echo "Create a .env file in the repo root: cp .env.example .env"
   exit 1
 fi
 echo "OK - all tokens present"
