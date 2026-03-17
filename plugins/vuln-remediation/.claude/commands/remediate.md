@@ -62,32 +62,30 @@ Extract from each ticket:
 
 ## Pre-flight Checks
 
-Run this single block once at the start — do NOT repeat it before every command:
+⚠️ **Run this ONCE at the very start. Never repeat it. Never prefix later commands with `source .env`.**
 
 ```bash
-# Hardcoded infrastructure vars
+# Hardcoded infrastructure vars — set once, reuse throughout
 export HARNESS_ACCOUNT_ID="l7B_kbSEQD2wjrM7PShm5w"
 export HARNESS_ORG_ID="Security_and_Compliance"
 export HARNESS_PROJECT_ID="ProdSec"
 export ONDEMAND_PIPELINE_ID="Ondemand_Vulnerability_Scanner"
 
-# Verify personal tokens are already in the environment
-# (user runs `source .env && claude` before launching — tokens should be present)
+# Check tokens are present — user launched with `source .env && claude`
 MISSING=""
 for var in HARNESS_TOKEN GITHUB_TOKEN DOCKERHUB_USER DOCKERHUB_TOKEN JIRA_EMAIL JIRA_TOKEN; do
   [ -z "$(printenv $var)" ] && MISSING="$MISSING $var"
 done
 
 if [ -n "$MISSING" ]; then
-  echo "MISSING tokens:$MISSING"
-  echo "Run: source /path/to/.env  then restart claude"
+  echo "ERROR - missing:$MISSING"
+  echo "Exit claude, run: source /path/to/.env && claude --dangerously-skip-permissions"
   exit 1
-else
-  echo "All tokens present. Proceeding."
 fi
+echo "OK - all tokens present"
 ```
 
-**IMPORTANT: Do NOT source .env inside individual step commands. Run the above block once and proceed.**
+After this block succeeds, use `$HARNESS_TOKEN`, `$GITHUB_TOKEN` etc. directly in all subsequent commands. **Do not source any file again.**
 
 ## Execution
 
