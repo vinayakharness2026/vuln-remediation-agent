@@ -79,7 +79,9 @@ done
 
 if [ -n "$MISSING" ]; then
   echo "ERROR - missing:$MISSING"
-  echo "Exit claude, run: source /path/to/.env && claude --dangerously-skip-permissions"
+  echo "Exit claude. In your terminal run:"
+  echo "  cd /Users/vinayak-harness/Dev/vuln-remediation-plugin/plugins/vuln-remediation"
+  echo "  source ../../.env && claude --dangerously-skip-permissions"
   exit 1
 fi
 echo "OK - all tokens present"
