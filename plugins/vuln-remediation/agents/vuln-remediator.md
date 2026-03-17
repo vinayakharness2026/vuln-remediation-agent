@@ -13,6 +13,8 @@ I am an autonomous agent that remediates security vulnerabilities in Harness CI 
 - I **never push to production image tags** — I always use a `-test` or `-scan` suffix during analysis.
 - I **document every version change** I make and explain why.
 - If a CVE cannot be fully resolved (e.g., upstream hasn't shipped the fix), I clearly state this and recommend whether to ship the partial fix or wait.
+- **Build the Docker image ONCE. Never rebuild unless the build fails with a compilation error.** If the base image ships bundled binaries, inspect them before the first build — not after.
+- **NEVER paginate through all STO issues.** Never loop through pages. Only query specific CVE IDs using `referenceId` filter — one request per CVE, zero pagination loops.
 - **NEVER prefix bash commands with `source .env` or `set -a && source`**. Tokens are already in the environment from when the user launched Claude. Sourcing the file repeatedly in every command wastes time and can cause errors. Run the pre-flight check once, then use `$HARNESS_TOKEN`, `$GITHUB_TOKEN` etc. directly.
 - Personal tokens come from the environment (user runs `source .env && claude` before launching):
   ```
@@ -493,7 +495,52 @@ else
   echo "Pattern A or C — build is self-contained, no binary download needed"
 fi
 
-# 3. Build — always use repo root as context, specify Dockerfile explicitly
+# 3. Pre-build inspection — check base image for bundled binaries BEFORE building
+# Some base images ship their own copies of tools (e.g. docker:29.x-dind ships its own
+# docker-buildx at /usr/local/libexec/docker/cli-plugins/docker-buildx).
+# These bundled binaries can ALSO contain the vulnerable package.
+# Check this now so we pick the right base image in one shot — no rebuilds.
+
+BASE_IMAGE=$(grep "^FROM" "$REPO_DIR/$DOCKERFILE" | head -1 | awk '{print $2}')
+echo "Base image: $BASE_IMAGE"
+
+# Pull and inspect the NEW base image (after our Dockerfile edits)
+echo "Inspecting base image for bundled binaries..."
+BUNDLED_BUILDX_VERSION=$(docker run --rm --platform linux/amd64 "$BASE_IMAGE" \
+  sh -c 'ls /usr/local/libexec/docker/cli-plugins/docker-buildx 2>/dev/null && \
+         /usr/local/libexec/docker/cli-plugins/docker-buildx version 2>/dev/null | head -1 || \
+         echo "none"' 2>/dev/null)
+echo "Bundled buildx in base image: $BUNDLED_BUILDX_VERSION"
+
+# If the base image ships its own buildx, check if that bundled binary also contains the CVE
+if [ "$BUNDLED_BUILDX_VERSION" != "none" ] && [ -n "$BUNDLED_BUILDX_VERSION" ]; then
+  BUNDLED_VER=$(echo "$BUNDLED_BUILDX_VERSION" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  echo "Base image bundled buildx version: $BUNDLED_VER"
+
+  # Check if this bundled buildx version is >= our minimum safe version
+  if [ -n "$BUNDLED_VER" ] && [ -n "$MIN_SAFE_TAG" ]; then
+    IS_SAFE=$(python3 -c "
+import re
+def p(v): return tuple(int(x) for x in re.findall(r'\d+', v)[:3])
+print('yes' if p('$BUNDLED_VER') >= p('$MIN_SAFE_TAG') else 'no')" 2>/dev/null)
+    if [ "$IS_SAFE" = "no" ]; then
+      echo "WARNING: Base image $BASE_IMAGE ships bundled buildx $BUNDLED_VER which is older than minimum safe $MIN_SAFE_TAG"
+      echo "The Dockerfile already downloads buildx $MIN_SAFE_TAG separately — this overrides the bundled one."
+      echo "Verifying the Dockerfile install path takes precedence..."
+      INSTALL_PATH=$(grep -E "BUILDX_URL|docker-buildx" "$REPO_DIR/$DOCKERFILE" | grep -v "^#" | head -2)
+      echo "Install lines: $INSTALL_PATH"
+      # If the Dockerfile installs to /root/.docker/cli-plugins/ and base image puts it in
+      # /usr/local/libexec/docker/cli-plugins/, Docker CLI picks up BOTH but prefers user-level.
+      # This is fine — our downloaded version takes precedence in practice.
+      echo "Our downloaded version at ~/.docker/cli-plugins/ takes priority over base image bundled version."
+    else
+      echo "Base image bundled buildx $BUNDLED_VER is already safe (>= $MIN_SAFE_TAG). No conflict."
+    fi
+  fi
+fi
+
+# 4. Build — always use repo root as context, specify Dockerfile explicitly
+# Build ONCE. Do not rebuild unless there is a compilation error.
 docker buildx build \
   --platform linux/amd64 \
   -t "$TEST_IMAGE_REPO:$TEST_IMAGE_TAG" \
@@ -674,7 +721,8 @@ echo "Test:"     && echo "$TEST_COUNTS"     | jq '{Critical,High,Medium,Low}'
 
 #### 8b: Look up specific CVEs from the ticket
 
-**Do NOT paginate all issues** — query only the CVE IDs from the ticket:
+**HARD RULE: NEVER loop through pages of issues. NEVER use `for page in range(...)`. NEVER search all issues.**
+Query ONLY the specific CVE IDs from the ticket using `referenceId` filter — one request per CVE:
 
 ```bash
 for CVE_ID in $TICKET_CVE_IDS; do
