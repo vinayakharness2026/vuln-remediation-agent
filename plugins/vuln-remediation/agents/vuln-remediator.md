@@ -410,11 +410,15 @@ IFS='.' read -r VER_MAJOR VER_MINOR VER_PATCH <<< "$ORIG_VERSION"
 NEXT_PATCH=$((VER_PATCH + 1))
 NEXT_VERSION="${VER_MAJOR}.${VER_MINOR}.${NEXT_PATCH}"   # 1.3.14
 
-# Build tag: {plugin-name}-{next-version}--debug
+# Tag format is ALWAYS: {plugin-name}-{next-patch-version}--debug
+# e.g. buildx-1.3.16--debug
+# NEVER use the JIRA ticket number, branch name, or any other value as the tag.
 TEST_IMAGE_REPO="$DOCKERHUB_USER/${PLUGIN_SHORT_NAME}-test"
-TEST_IMAGE_TAG="${PLUGIN_SHORT_NAME}-${NEXT_VERSION}--debug"   # buildx-1.3.14--debug
+TEST_IMAGE_TAG="${PLUGIN_SHORT_NAME}-${NEXT_VERSION}--debug"
 
-echo "Test image: $TEST_IMAGE_REPO:$TEST_IMAGE_TAG"
+echo "Test image repo: $TEST_IMAGE_REPO"
+echo "Test image tag:  $TEST_IMAGE_TAG"
+echo "Full ref:        $TEST_IMAGE_REPO:$TEST_IMAGE_TAG"
 ```
 
 **Before running the build**, inspect the repo structure to determine the correct Dockerfile and build strategy. Repos fall into three patterns:
@@ -501,9 +505,36 @@ echo "Pushed: $TEST_IMAGE_REPO:$TEST_IMAGE_TAG"
 
 ### Step 7: Trigger Harness OnDemand Vulnerability Scan and Wait
 
-Use the **Harness MCP** `harness_execute` tool to trigger the pipeline. No raw curl needed.
+**Before triggering, always validate that image and tag are set and non-empty:**
 
-**Trigger:**
+```bash
+# TEST_IMAGE_REPO and TEST_IMAGE_TAG must be set separately — never pass the full
+# "repo:tag" string as a single value. The pipeline takes them as two distinct inputs.
+echo "TEST_IMAGE_REPO=$TEST_IMAGE_REPO"
+echo "TEST_IMAGE_TAG=$TEST_IMAGE_TAG"
+
+if [ -z "$TEST_IMAGE_REPO" ] || [ "$TEST_IMAGE_REPO" = "None" ]; then
+  echo "ERROR: TEST_IMAGE_REPO is empty or None — aborting pipeline trigger"
+  exit 1
+fi
+if [ -z "$TEST_IMAGE_TAG" ] || [ "$TEST_IMAGE_TAG" = "None" ] || [ "$TEST_IMAGE_TAG" = "latest" ]; then
+  echo "ERROR: TEST_IMAGE_TAG is empty, None, or defaulted to 'latest' — aborting pipeline trigger"
+  exit 1
+fi
+
+# Tag format must be: {plugin-name}-{next-version}--debug  e.g. buildx-1.3.16--debug
+# NEVER use the JIRA ticket number as the tag. If the tag doesn't match this pattern, recompute it:
+if ! echo "$TEST_IMAGE_TAG" | grep -qE '^[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+--debug$'; then
+  echo "WARNING: Tag '$TEST_IMAGE_TAG' doesn't match expected format. Recomputing..."
+  IFS='.' read -r VER_MAJOR VER_MINOR VER_PATCH <<< "$ORIG_IMAGE_TAG"
+  NEXT_PATCH=$((VER_PATCH + 1))
+  TEST_IMAGE_TAG="${PLUGIN_SHORT_NAME}-${VER_MAJOR}.${VER_MINOR}.${NEXT_PATCH}--debug"
+  echo "Corrected tag: $TEST_IMAGE_TAG"
+fi
+```
+
+Use the **Harness MCP** `harness_execute` tool to trigger the pipeline with the validated values:
+
 ```
 harness_execute({
   resource_type: "pipeline",
@@ -515,6 +546,26 @@ harness_execute({
     Connector: "docker.io"
   }
 })
+```
+
+If the MCP tool is unavailable, fall back to curl — but the same validation applies:
+```bash
+curl -s -X POST \
+  "https://harness0.harness.io/gateway/pipeline/api/pipeline/execute/Ondemand_Vulnerability_Scanner?routingId=$HARNESS_ACCOUNT_ID&accountIdentifier=$HARNESS_ACCOUNT_ID&orgIdentifier=$HARNESS_ORG_ID&projectIdentifier=$HARNESS_PROJECT_ID&moduleType=ci" \
+  -H "x-api-key: $HARNESS_TOKEN" \
+  -H "Content-Type: application/yaml" \
+  --data-raw "pipeline:
+  identifier: Ondemand_Vulnerability_Scanner
+  variables:
+    - name: image
+      type: String
+      value: $TEST_IMAGE_REPO
+    - name: tag
+      type: String
+      value: $TEST_IMAGE_TAG
+    - name: Connector
+      type: String
+      value: docker.io"
 ```
 
 Capture the returned execution ID as `EXECUTION_ID`.
