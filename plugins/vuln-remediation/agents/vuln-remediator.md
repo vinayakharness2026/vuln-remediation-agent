@@ -799,49 +799,56 @@ git add Dockerfile go.mod go.sum
 git commit -m "fix: remediate vulnerabilities in $ORIG_IMAGE_REPO - upgrade to $NEXT_VERSION"
 git push origin "$BRANCH"
 
-# Build PR body with full table
+# Build PR body — ALWAYS use this exact format, no deviations
 PR_BODY=$(cat <<EOF
 ## Vulnerability Remediation: $ORIG_IMAGE_REPO
 
-**Tickets:** $JIRA_TICKETS_LIST
+**Ticket:** $JIRA_TICKETS_LIST
 **Test image scanned:** \`$TEST_IMAGE_REPO:$TEST_IMAGE_TAG\`
 **Baseline scan (original image):** [View execution](https://harness0.harness.io/ng/account/$HARNESS_ACCOUNT_ID/all/orgs/$HARNESS_ORG_ID/projects/$HARNESS_PROJECT_ID/pipelines/$ONDEMAND_PIPELINE_ID/executions/$BASELINE_EXECUTION_ID/pipeline)
 **After scan (test image):** [View execution](https://harness0.harness.io/ng/account/$HARNESS_ACCOUNT_ID/all/orgs/$HARNESS_ORG_ID/projects/$HARNESS_PROJECT_ID/pipelines/$ONDEMAND_PIPELINE_ID/executions/$EXECUTION_ID/pipeline)
 
 ---
 
-### Vulnerability Delta — Harness OnDemand Scanner (Prisma Cloud)
-
-| Severity | Before ($ORIG_IMAGE_TAG) | After ($TEST_IMAGE_TAG) | Change |
-|----------|--------------------------|--------------------------|--------|
-| Critical | $BASELINE_CRITICAL | $AFTER_CRITICAL | $(( AFTER_CRITICAL - BASELINE_CRITICAL )) |
-| High     | $BASELINE_HIGH     | $AFTER_HIGH     | $(( AFTER_HIGH - BASELINE_HIGH )) |
-| Medium   | $BASELINE_MEDIUM   | $AFTER_MEDIUM   | $(( AFTER_MEDIUM - BASELINE_MEDIUM )) |
-| Low      | $BASELINE_LOW      | $AFTER_LOW      | $(( AFTER_LOW - BASELINE_LOW )) |
-
 ### Vulnerability Delta — Trivy (local scan)
 
 > Trivy and OnDemand use different CVE databases and may flag different issues. Both are shown for completeness.
 
-| Severity | Before ($ORIG_IMAGE_TAG) | After ($TEST_IMAGE_TAG) | Change |
-|----------|--------------------------|--------------------------|--------|
+| Severity | Before ($ORIG_IMAGE_TAG) | After (test build) | Change |
+|----------|--------------------------|--------------------|--------|
 | Critical | $TRIVY_BASELINE_CRITICAL | $TRIVY_TEST_CRITICAL | $(( TRIVY_TEST_CRITICAL - TRIVY_BASELINE_CRITICAL )) |
 | High     | $TRIVY_BASELINE_HIGH     | $TRIVY_TEST_HIGH     | $(( TRIVY_TEST_HIGH - TRIVY_BASELINE_HIGH )) |
 | Medium   | $TRIVY_BASELINE_MEDIUM   | $TRIVY_TEST_MEDIUM   | $(( TRIVY_TEST_MEDIUM - TRIVY_BASELINE_MEDIUM )) |
 | Low      | $TRIVY_BASELINE_LOW      | $TRIVY_TEST_LOW      | $(( TRIVY_TEST_LOW - TRIVY_BASELINE_LOW )) |
+| Total    | $(( TRIVY_BASELINE_CRITICAL + TRIVY_BASELINE_HIGH + TRIVY_BASELINE_MEDIUM + TRIVY_BASELINE_LOW )) | $(( TRIVY_TEST_CRITICAL + TRIVY_TEST_HIGH + TRIVY_TEST_MEDIUM + TRIVY_TEST_LOW )) | $(( (TRIVY_TEST_CRITICAL + TRIVY_TEST_HIGH + TRIVY_TEST_MEDIUM + TRIVY_TEST_LOW) - (TRIVY_BASELINE_CRITICAL + TRIVY_BASELINE_HIGH + TRIVY_BASELINE_MEDIUM + TRIVY_BASELINE_LOW) )) |
+
+### Vulnerability Delta — Harness OnDemand Scanner (Prisma Cloud)
+
+| Severity | Before ($ORIG_IMAGE_TAG) | After (test build) | Change |
+|----------|--------------------------|--------------------|--------|
+| Critical | $BASELINE_CRITICAL | $AFTER_CRITICAL | $(( AFTER_CRITICAL - BASELINE_CRITICAL )) |
+| High     | $BASELINE_HIGH     | $AFTER_HIGH     | $(( AFTER_HIGH - BASELINE_HIGH )) |
+| Medium   | $BASELINE_MEDIUM   | $AFTER_MEDIUM   | $(( AFTER_MEDIUM - BASELINE_MEDIUM )) |
+| Low      | $BASELINE_LOW      | $AFTER_LOW      | $(( AFTER_LOW - BASELINE_LOW )) |
+| Info     | $BASELINE_INFO     | $AFTER_INFO     | $(( AFTER_INFO - BASELINE_INFO )) |
+| Total    | $(( BASELINE_CRITICAL + BASELINE_HIGH + BASELINE_MEDIUM + BASELINE_LOW )) | $(( AFTER_CRITICAL + AFTER_HIGH + AFTER_MEDIUM + AFTER_LOW )) | $(( (AFTER_CRITICAL + AFTER_HIGH + AFTER_MEDIUM + AFTER_LOW) - (BASELINE_CRITICAL + BASELINE_HIGH + BASELINE_MEDIUM + BASELINE_LOW) )) |
 
 ---
 
 ### Per-Ticket CVE Status
 
-<!-- One section per JIRA ticket -->
 $PER_TICKET_SECTIONS
 
 ---
 
 ### Changes Made
 
-$CHANGES_SUMMARY
+| File | Change |
+|------|--------|
+$CHANGES_TABLE_ROWS
+
+**Version selection rationale:**
+$VERSION_RATIONALE
 
 $(if [ ${#MAJOR_BUMP_WARNINGS[@]} -gt 0 ]; then
 cat <<WARN
@@ -849,17 +856,17 @@ cat <<WARN
 ---
 
 > [!WARNING]
-> **Major version upgrades included — sanity testing required**
+> **Major version upgrade included — sanity testing required**
 >
-> The following components were upgraded across a major version boundary and may contain breaking changes:
+> The base image was upgraded across a major version boundary:
 >
 $(for warn in "${MAJOR_BUMP_WARNINGS[@]}"; do echo "> - $warn"; done)
 >
-> **Before merging, please:**
+> Before merging, please:
 > 1. Deploy the new image to a QA or staging environment
 > 2. Run the full CI pipeline sanity suite against it
-> 3. Verify plugin-specific behaviour (build outputs, caching, auth flows) is unchanged
-> 4. Check the upstream changelog for breaking changes before approving
+> 3. Verify Docker-in-Docker behaviour (buildx builds, caching, push/pull) is unchanged
+> 4. Check the upstream changelog for any breaking changes relevant to this plugin
 WARN
 fi)
 EOF
@@ -876,39 +883,43 @@ curl -s -X POST "https://api.github.com/repos/$GITHUB_ORG/$GITHUB_REPO/pulls" \
   }"
 ```
 
-I build `$PER_TICKET_SECTIONS` by iterating over each ticket and generating a block like:
+I build `$PER_TICKET_SECTIONS` by iterating over each ticket. Each section MUST follow this exact format:
 
 ```markdown
-#### CI-1234 — [Link](https://harness.atlassian.net/browse/CI-1234)
+#### CI-1234 — [High: description of the CVE](https://harness.atlassian.net/browse/CI-1234)
 
-**Summary:** Upgrade go.opentelemetry.io/otel/sdk, crypto/tls via buildx binary bump
-
-| CVE | Package | Before | After | Required | Status | Reason |
-|-----|---------|--------|-------|----------|--------|--------|
-| CVE-2026-24051 | go.opentelemetry.io/otel/sdk | v1.31.0 | v1.38.0 | v1.40.0+ | ⚠️ Partial | Upstream buildx hasn't shipped v1.40.0 |
-| CVE-2025-68121 | crypto/tls | v1.25.6 | v1.25.7 | v1.25.7+ | ✅ Resolved | Fixed by docker base upgrade |
-
-**Code changes for this ticket:**
-- `FROM docker:28.1.1-dind` → `FROM docker:29.2.1-dind`
-- `BUILDX_URL` → `v0.31.1` (was `v0.23.0`)
-
----
-
-#### CI-1235 — [Link](https://harness.atlassian.net/browse/CI-1235)
-
-**Summary:** busybox and go-tuf vulnerabilities
+**Summary:** One paragraph explaining what was vulnerable, where (which binary/base image), why it was below the fix threshold, and what this PR does to fix all occurrences.
 
 | CVE | Package | Before | After | Required | Status | Reason |
 |-----|---------|--------|-------|----------|--------|--------|
-| CVE-2025-60876 | busybox | 1.37.0-r30 | 1.37.0-r30 | unknown | ❌ Blocked | No upstream fix available |
-| CVE-2026-23992 | go-tuf/v2 | v2.3.0 | v2.3.1 | v2.3.1+ | ✅ Resolved | Fixed by base image upgrade |
+| CVE-2025-15558 | github.com/docker/cli | v28.0.4 (buildx binary), v28.1.1 (base image) | not present | >= 29.2.0 | ✅ Resolved | buildx upgraded to v0.32.1 (ships docker/cli v29.2.1); base upgraded to docker:29.2.0-dind |
+
+> **Note on CVE scope:** If the CVE is OS/platform-specific (e.g. Windows-only), state it clearly here. The fix is still applied to clear the scanner finding and stay current with upstream.
 
 **Code changes for this ticket:**
-- busybox: no change possible (no fix upstream)
-- go-tuf: resolved transitively via base image upgrade
+
+`docker/docker/Dockerfile.linux.amd64`:
+- `FROM docker:X.X.X-dind` → `FROM docker:Y.Y.Y-dind`
+- `BUILDX_URL` → `vA.B.C` (was `vX.Y.Z`)
+
+`docker/docker/Dockerfile.linux.arm64`:
+- `FROM arm64v8/docker:X.X.X-dind` → `FROM arm64v8/docker:Y.Y.Y-dind`
+- `BUILDX_URL` → `vA.B.C` (was `vX.Y.Z`)
 ```
 
-I build `$CHANGES_SUMMARY` from the actual Dockerfile diffs made in Step 5. I build `$JIRA_TICKETS_LIST` as a comma-separated list of linked ticket numbers: `[CI-1234](https://harness.atlassian.net/browse/CI-1234), [CI-1235](https://harness.atlassian.net/browse/CI-1235)`.
+I build `$CHANGES_TABLE_ROWS` as pipe-delimited rows for the Changes Made table — one row per file changed:
+```
+| docker/docker/Dockerfile.linux.amd64 | Base image: docker:28.1.1-dind → docker:29.2.0-dind; buildx binary: v0.23.0 → v0.32.1 |
+| docker/docker/Dockerfile.linux.arm64 | Base image: arm64v8/docker:28.1.1-dind → arm64v8/docker:29.2.0-dind; buildx binary: v0.23.0 → v0.32.1 |
+```
+
+I build `$VERSION_RATIONALE` explaining WHY each version was chosen — specifically why it is the MINIMUM safe version, not just the latest:
+```
+- `docker:29.2.0-dind` is the minimum base image version that ships docker/cli >= v29.2.0. Smallest bump that satisfies the fix requirement.
+- `docker/buildx v0.32.1` is the minimum buildx release that ships docker/cli >= v29.2.0 (ships v29.2.1). Every release from v0.24.0 through v0.31.1 shipped docker/cli in the 28.x range.
+```
+
+I build `$JIRA_TICKETS_LIST` as linked ticket references: `[CI-1234](https://harness.atlassian.net/browse/CI-1234), [CI-1235](https://harness.atlassian.net/browse/CI-1235)`.
 
 ## Error Handling
 
